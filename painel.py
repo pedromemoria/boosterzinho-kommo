@@ -5,9 +5,9 @@ from openai import OpenAI
 from knowledge_base import CerebroBoosterzinho
 from erp_client import consultar_valores_e_agenda
 
-st.set_page_config(page_title="Boosterzinho CRC - Painel", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="Boosterzinho", page_icon="🤖", layout="wide")
 
-st.title("🤖 Boosterzinho CRC — Central de Treinamento e Simulação")
+st.title("🤖 Boosterzinho")
 
 # Barra lateral para configurações e chave API
 with st.sidebar:
