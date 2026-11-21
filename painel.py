@@ -6,7 +6,6 @@ import requests
 import streamlit as st
 from litellm import completion
 from knowledge_base import CerebroBoosterzinho
-from erp_client import consultar_valores_e_agenda
 
 litellm.drop_params = True
 litellm.num_retries = 0
@@ -16,14 +15,17 @@ st.title("🤖 Boosterzinho — Central Multi-Conta Kommo")
 
 PROVEDORES_IA = {
     "Groq (Llama 3.3 - Ultra Rápido)": {
-        "modelos": ["groq/llama-3.3-70b-versatile"],
+        "modelos": [
+            "groq/llama-3.3-70b-versatile",
+            "groq/llama-3.1-8b-instant"
+        ],
         "env_var": "GROQ_API_KEY",
         "placeholder": "gsk_..."
     },
     "Gemini (Google)": {
         "modelos": [
-            "gemini/gemini-3.8-flash-lite",
-            "gemini/gemini-3.8-flash"
+            "gemini/gemini-2.5-flash",
+            "gemini/gemini-2.5-flash-lite"
         ],
         "env_var": "GEMINI_API_KEY",
         "placeholder": "AIzaSy..."
@@ -42,8 +44,8 @@ PROVEDORES_IA = {
 
 with st.sidebar:
     st.subheader("🗄️ Banco de Dados (Supabase)")
-    sb_url = st.text_input("Supabase URL", value=os.getenv("SUPABASE_URL", ""), placeholder="https://xxxx.supabase.co")
-    sb_key = st.text_input("Supabase Anon Key", value=os.getenv("SUPABASE_KEY", ""), type="password", placeholder="sb_publishable_...")
+    sb_url = st.text_input("Supabase URL", value=os.getenv("SUPABASE_URL", ""), placeholder="https://xxxx.supabase.co").strip()
+    sb_key = st.text_input("Supabase Anon Key", value=os.getenv("SUPABASE_KEY", ""), type="password", placeholder="sb_publishable_...").strip()
     if sb_url:
         os.environ["SUPABASE_URL"] = sb_url
     if sb_key:
@@ -78,7 +80,7 @@ with st.sidebar:
                         "nome_empresa": novo_nome.strip(),
                         "kommo_subdominio": novo_sub.strip(),
                         "kommo_token": novo_tok.strip(),
-                        "prompt_persona": "Você é um consultor comercial especialista em atendimento pelo WhatsApp. Conduza o lead do primeiro contato até o fechamento com empatia, firmeza e quebra de objeções.",
+                        "prompt_persona": "Você é um consultor comercial especialista em atendimento pelo WhatsApp. Conduza o lead do primeiro contato até o fechamento usando SPIN Selling com empatia, firmeza e quebra de objeções.",
                         "etapa_convertido_id": ""
                     })
                     st.success(f"Conta `{novo_nome}` criada!")
@@ -89,13 +91,13 @@ with st.sidebar:
     else:
         conta_ativa_id = mapa_contas[escolha_conta]
 
-    # Inicializa o cérebro isolado exclusivamente para a conta selecionada
     cerebro = CerebroBoosterzinho(account_id=conta_ativa_id, supabase_url=sb_url, supabase_key=sb_key)
     dados_conta = cerebro.obter_conta(conta_ativa_id)
 
     if st.session_state.get("ultima_conta_selecionada") != conta_ativa_id:
         st.session_state.ultima_conta_selecionada = conta_ativa_id
         st.session_state.mensagens_teste = []
+        st.session_state.ultimas_fontes = ""
         st.session_state.ficha_crm = {
             "Nome_Lead": "—",
             "Interesse_Produto": "—",
@@ -121,7 +123,7 @@ with st.sidebar:
             type="password",
             placeholder=cfg["placeholder"],
             key=f"key_{cfg['env_var']}"
-        )
+        ).strip()
         if chave:
             os.environ[cfg["env_var"]] = chave
             chaves_ativas[ia_nome] = chave
@@ -138,6 +140,8 @@ with aba_chat:
 
     if "mensagens_teste" not in st.session_state:
         st.session_state.mensagens_teste = []
+    if "ultimas_fontes" not in st.session_state:
+        st.session_state.ultimas_fontes = ""
     if "ficha_crm" not in st.session_state:
         st.session_state.ficha_crm = {
             "Nome_Lead": "—",
@@ -149,6 +153,8 @@ with aba_chat:
 
     with col_chat:
         st.subheader(f"WhatsApp Simulado — {dados_conta['nome_empresa']}")
+        docs_conta_atual = cerebro.listar_documentos()
+        st.caption(f"📚 Base ativa nesta conta: **{len(docs_conta_atual)} arquivo(s)/site(s)** conectados ao motor.")
 
         for msg in st.session_state.mensagens_teste:
             with st.chat_message(msg["role"]):
@@ -165,12 +171,31 @@ with aba_chat:
                 with st.chat_message("user"):
                     st.write(prompt_usuario)
 
-                with st.spinner("Respondendo..."):
-                    contexto_dinamico = cerebro.buscar_contexto(prompt_usuario, top_k=4)
-                    regras_fixas = cerebro.obter_documento("01_oferta_e_regras.md")
-                    matriz_objecoes = cerebro.obter_documento("02_quebra_objecoes.md")
+                with st.spinner("Consultando PDFs/sites e respondendo..."):
+                    # Limita o tamanho dos trechos para não estourar o limite de tokens por minuto do plano gratuito
+                    contexto_dinamico = cerebro.buscar_contexto(prompt_usuario, top_k=3)[:2500]
+                    regras_fixas = cerebro.obter_documento("01_oferta_e_regras.md")[:2000]
+                    matriz_objecoes = cerebro.obter_documento("02_quebra_objecoes.md")[:2000]
+                    st.session_state.ultimas_fontes = contexto_dinamico or "Nenhum trecho específico encontrado."
 
                     tools = [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "consultar_base_conhecimento",
+                                "description": "Pesquisa informações detalhadas nos PDFs, sites salvos, técnicas de SPIN Selling, valores e regras desta conta.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "termo_busca": {
+                                            "type": "string",
+                                            "description": "Palavras-chave para buscar nos PDFs e sites (ex: spin selling, preco, garantia, objecao)"
+                                        }
+                                    },
+                                    "required": ["termo_busca"]
+                                }
+                            }
+                        },
                         {
                             "type": "function",
                             "function": {
@@ -197,10 +222,11 @@ with aba_chat:
 
                     SUA MISSÃO NO WHATSAPP:
                     1. Conduzir o lead desde o primeiro 'oi' até a CONVERSÃO (agendamento, fechamento ou pagamento).
-                    2. Fazer 1 pergunta curta e estratégica por vez (estilo WhatsApp, máximo 2 a 3 frases).
-                    3. Descobrir a dor/necessidade antes de apenas jogar preço.
-                    4. QUEBRA DE OBJEÇÕES: Sempre que o lead hesitar (ex: 'tá caro', 'vou pensar', 'vou falar com meu marido/sócio', 'depois eu vejo'), acolha em 1 frase curta, use os argumentos da MATRIZ DE OBJEÇÕES abaixo para reverter e finalize com uma pergunta de avanço/fechamento.
-                    5. Sempre que identificar dados do lead, uma objeção ou o fechamento, chame `atualizar_lead_kommo`.
+                    2. Aplicar metodologia consultiva (SPIN Selling) e consultar seus PDFs/sites salvos (`consultar_base_conhecimento`) sempre que precisar de argumentos, detalhes técnicos ou scripts.
+                    3. Fazer 1 pergunta curta e estratégica por vez (estilo WhatsApp, máximo 2 a 3 frases).
+                    4. Descobrir a dor/necessidade antes de apenas jogar preço.
+                    5. QUEBRA DE OBJEÇÕES: Sempre que o lead hesitar (ex: 'tá caro', 'vou pensar', 'vou falar com meu marido/sócio', 'depois eu vejo'), acolha em 1 frase curta, use os argumentos da MATRIZ DE OBJEÇÕES e dos PDFs abaixo para reverter e finalize com uma pergunta de avanço/fechamento.
+                    6. Sempre que identificar dados do lead, uma objeção ou o fechamento, chame `atualizar_lead_kommo`.
 
                     === OFERTA, PREÇOS E REGRAS DA CONTA ===
                     {regras_fixas}
@@ -208,33 +234,32 @@ with aba_chat:
                     === MATRIZ DE QUEBRA DE OBJEÇÕES DA CONTA ===
                     {matriz_objecoes}
 
-                    === TRECHOS DE APOIO (PDFs / SITES IMPORTADOS) ===
+                    === TRECHOS EXTRAÍDOS DOS PDFs E SITES DESTA CONTA ===
                     {contexto_dinamico}
                     """
 
                     def executar_ia(mensagens_atuais):
-                        ultimo_erro = None
+                        erros_tentativas = []
                         for ia_atual in ias_prontas:
                             cfg = PROVEDORES_IA[ia_atual]
-                            for idx, mod in enumerate(cfg["modelos"]):
+                            for mod in cfg["modelos"]:
                                 try:
                                     return completion(
                                         model=mod,
                                         messages=mensagens_atuais,
                                         tools=tools,
                                         api_key=chaves_ativas[ia_atual],
-                                        timeout=15,
-                                        num_retries=0,
-                                        reasoning_effort="low"
+                                        timeout=25,
+                                        num_retries=0
                                     )
                                 except Exception as err:
-                                    ultimo_erro = err
-                                    if idx < len(cfg["modelos"]) - 1:
-                                        time.sleep(1)
-                                    continue
-                        raise ultimo_erro
+                                    erros_tentativas.append(f"[{mod}]: {err}")
+                                    time.sleep(0.5)
+                        raise RuntimeError(" | ".join(erros_tentativas))
 
-                    msgs = [{"role": "system", "content": sys_prompt}] + st.session_state.mensagens_teste
+                    # Mantém as últimas 12 mensagens para evitar excesso de tokens no plano gratuito
+                    historico_recente = st.session_state.mensagens_teste[-12:]
+                    msgs = [{"role": "system", "content": sys_prompt}] + historico_recente
 
                     try:
                         resp = executar_ia(msgs)
@@ -244,15 +269,25 @@ with aba_chat:
                             msgs.append(msg_ia.model_dump(exclude_none=True))
                             for tc in msg_ia.tool_calls:
                                 args = json.loads(tc.function.arguments)
-                                if tc.function.name == "atualizar_lead_kommo":
+                                if tc.function.name == "consultar_base_conhecimento":
+                                    termo = args.get("termo_busca", "")
+                                    achados = cerebro.buscar_contexto(termo, top_k=3)[:2000]
+                                    if achados:
+                                        st.session_state.ultimas_fontes = achados
+                                    res = {"conteudo_encontrado": achados or "Nenhum detalhe extra encontrado para esse termo."}
+                                elif tc.function.name == "atualizar_lead_kommo":
                                     for k, v in args.items():
                                         if v and k in st.session_state.ficha_crm:
                                             st.session_state.ficha_crm[k] = str(v)
+                                    res = {"status": "atualizado_no_kommo"}
+                                else:
+                                    res = {"status": "ok"}
+
                                 msgs.append({
                                     "role": "tool",
                                     "tool_call_id": tc.id,
                                     "name": tc.function.name,
-                                    "content": json.dumps({"status": "atualizado_no_kommo"}, ensure_ascii=False)
+                                    "content": json.dumps(res, ensure_ascii=False)
                                 })
 
                             resp = executar_ia(msgs)
@@ -270,8 +305,13 @@ with aba_chat:
         for campo, valor in st.session_state.ficha_crm.items():
             st.text_input(campo.replace("_", " "), value=valor, disabled=True)
 
+        if st.session_state.ultimas_fontes:
+            with st.expander("🔍 Trechos de PDFs/Sites lidos na última resposta"):
+                st.caption(st.session_state.ultimas_fontes[:1500])
+
         if st.button("🔄 Novo Lead de Teste"):
             st.session_state.mensagens_teste = []
+            st.session_state.ultimas_fontes = ""
             st.session_state.ficha_crm = {
                 "Nome_Lead": "—",
                 "Interesse_Produto": "—",
@@ -386,7 +426,7 @@ with aba_config:
         ed_etapa = st.text_input("ID da Etapa 'Convertido' no Funil Kommo (opcional)", value=dados_conta.get("etapa_convertido_id", ""))
         ed_persona = st.text_area(
             "Personalidade e Tom de Voz do Robô nesta conta:",
-            value=dados_conta.get("prompt_persona", "Você é um consultor comercial especialista em atendimento pelo WhatsApp. Conduza o lead do primeiro contato até o fechamento com empatia, firmeza e quebra de objeções."),
+            value=dados_conta.get("prompt_persona", "Você é um consultor comercial especialista em atendimento pelo WhatsApp. Conduza o lead do primeiro contato até o fechamento usando SPIN Selling com empatia, firmeza e quebra de objeções."),
             height=140
         )
         if st.form_submit_button("💾 Salvar Configurações da Conta"):
