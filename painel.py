@@ -13,19 +13,44 @@ litellm.num_retries = 0
 st.set_page_config(page_title="Boosterzinho Multi-Conta", page_icon="🤖", layout="wide")
 st.title("🤖 Boosterzinho — Central Multi-Conta Kommo")
 
+def obter_modelos_groq_ativos(api_key: str):
+    """Consulta diretamente na API do Groq quais modelos de texto estão habilitados para esta chave."""
+    if not api_key:
+        return []
+    try:
+        resp = requests.get(
+            "https://api.groq.com/openai/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=8
+        )
+        if resp.status_code == 200:
+            dados = resp.json().get("data", [])
+            ignorar = ("whisper", "guard", "tts", "vision", "embed", "orpheus", "safeguard")
+            ativos = [
+                f"groq/{m['id']}" for m in dados
+                if m.get("active", True) and not any(x in m["id"].lower() for x in ignorar)
+            ]
+            # Prioriza modelos Llama 4 / Llama / Qwen / GPT-OSS mais capazes primeiro
+            ativos.sort(key=lambda m: (
+                0 if "70b" in m or "llama-4" in m or "120b" in m else
+                1 if "llama" in m or "qwen" in m or "gpt" in m else 2
+            ))
+            if ativos:
+                return ativos[:3]
+    except Exception:
+        pass
+    return ["groq/meta-llama/llama-4-scout-17b-16e-instruct", "groq/llama3-70b-8192"]
+
 PROVEDORES_IA = {
-    "Groq (Llama 3.3 - Ultra Rápido)": {
-        "modelos": [
-            "groq/llama-3.3-70b-versatile",
-            "groq/llama-3.1-8b-instant"
-        ],
+    "Groq (Auto-Detectado - Ultra Rápido)": {
+        "modelos": ["AUTO_GROQ"],
         "env_var": "GROQ_API_KEY",
         "placeholder": "gsk_..."
     },
     "Gemini (Google)": {
         "modelos": [
-            "gemini/gemini-2.5-flash",
-            "gemini/gemini-2.5-flash-lite"
+            "gemini/gemini-3.8-flash",
+            "gemini/gemini-3.5-flash-lite"
         ],
         "env_var": "GEMINI_API_KEY",
         "placeholder": "AIzaSy..."
@@ -111,7 +136,7 @@ with st.sidebar:
     ias_selecionadas = st.multiselect(
         "Ordem de Prioridade (Fallback):",
         options=list(PROVEDORES_IA.keys()),
-        default=["Groq (Llama 3.3 - Ultra Rápido)", "Gemini (Google)"]
+        default=["Groq (Auto-Detectado - Ultra Rápido)", "Gemini (Google)"]
     )
 
     chaves_ativas = {}
@@ -172,7 +197,6 @@ with aba_chat:
                     st.write(prompt_usuario)
 
                 with st.spinner("Consultando PDFs/sites e respondendo..."):
-                    # Limita o tamanho dos trechos para não estourar o limite de tokens por minuto do plano gratuito
                     contexto_dinamico = cerebro.buscar_contexto(prompt_usuario, top_k=3)[:2500]
                     regras_fixas = cerebro.obter_documento("01_oferta_e_regras.md")[:2000]
                     matriz_objecoes = cerebro.obter_documento("02_quebra_objecoes.md")[:2000]
@@ -242,22 +266,29 @@ with aba_chat:
                         erros_tentativas = []
                         for ia_atual in ias_prontas:
                             cfg = PROVEDORES_IA[ia_atual]
-                            for mod in cfg["modelos"]:
+                            lista_modelos = (
+                                obter_modelos_groq_ativos(chaves_ativas[ia_atual])
+                                if cfg["modelos"] == ["AUTO_GROQ"]
+                                else cfg["modelos"]
+                            )
+                            for mod in lista_modelos:
                                 try:
-                                    return completion(
-                                        model=mod,
-                                        messages=mensagens_atuais,
-                                        tools=tools,
-                                        api_key=chaves_ativas[ia_atual],
-                                        timeout=25,
-                                        num_retries=0
-                                    )
+                                    kwargs_chamada = {
+                                        "model": mod,
+                                        "messages": mensagens_atuais,
+                                        "tools": tools,
+                                        "api_key": chaves_ativas[ia_atual],
+                                        "timeout": 25,
+                                        "num_retries": 0
+                                    }
+                                    if "gemini" in mod:
+                                        kwargs_chamada["reasoning_effort"] = "low"
+                                    return completion(**kwargs_chamada)
                                 except Exception as err:
                                     erros_tentativas.append(f"[{mod}]: {err}")
                                     time.sleep(0.5)
                         raise RuntimeError(" | ".join(erros_tentativas))
 
-                    # Mantém as últimas 12 mensagens para evitar excesso de tokens no plano gratuito
                     historico_recente = st.session_state.mensagens_teste[-12:]
                     msgs = [{"role": "system", "content": sys_prompt}] + historico_recente
 
