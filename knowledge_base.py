@@ -59,7 +59,23 @@ class CerebroBoosterzinho:
 
     def salvar_conta(self, dados: dict):
         if self.client:
-            self.client.table("clientes_kommo").upsert(dados, on_conflict="account_id").execute()
+            try:
+                existente = self.client.table("clientes_kommo") \
+                    .select("id") \
+                    .eq("account_id", dados["account_id"]) \
+                    .execute()
+
+                if existente.data:
+                    self.client.table("clientes_kommo") \
+                        .update(dados) \
+                        .eq("account_id", dados["account_id"]) \
+                        .execute()
+                else:
+                    self.client.table("clientes_kommo") \
+                        .insert(dados) \
+                        .execute()
+            except Exception as e:
+                raise RuntimeError(f"Erro ao salvar conta no Supabase: {getattr(e, 'message', str(e))} | {getattr(e, 'details', '')}")
 
     # --- GESTÃO DE CONHECIMENTO ISOLADO POR CONTA ---
     def carregar(self):
@@ -92,20 +108,35 @@ class CerebroBoosterzinho:
                     self.blocos.append(f"[{os.path.basename(caminho)}]\n{secao}")
 
     def salvar_documento(self, titulo: str, conteudo: str, origem: str = "manual"):
-        # Remove caracteres nulos (\x00) comuns na extração de PDFs que o PostgreSQL rejeita
-        conteudo_limpo = conteudo.replace("\x00", "")
-        titulo_limpo = titulo.replace("\x00", "")
+        # Remove caracteres de controle/nulos (\x00) comuns na extração de PDFs
+        conteudo_limpo = "".join(ch for ch in conteudo if ch >= " " or ch in "\n\r\t")
+        titulo_limpo = "".join(ch for ch in titulo if ch >= " ")
 
         if self.client:
-            self.client.table("documentos_cerebro").upsert(
-                {
-                    "account_id": self.account_id,
-                    "titulo": titulo_limpo,
-                    "conteudo": conteudo_limpo,
-                    "origem": origem
-                },
-                on_conflict="account_id,titulo"
-            ).execute()
+            try:
+                existente = self.client.table("documentos_cerebro") \
+                    .select("id") \
+                    .eq("account_id", self.account_id) \
+                    .eq("titulo", titulo_limpo) \
+                    .execute()
+
+                if existente.data:
+                    self.client.table("documentos_cerebro") \
+                        .update({"conteudo": conteudo_limpo, "origem": origem}) \
+                        .eq("id", existente.data[0]["id"]) \
+                        .execute()
+                else:
+                    self.client.table("documentos_cerebro") \
+                        .insert({
+                            "account_id": self.account_id,
+                            "titulo": titulo_limpo,
+                            "conteudo": conteudo_limpo,
+                            "origem": origem
+                        }) \
+                        .execute()
+            except Exception as e:
+                raise RuntimeError(f"Erro Supabase ({getattr(e, 'message', str(e))} | {getattr(e, 'details', '')})")
+
         os.makedirs(self.pasta, exist_ok=True)
         with open(f"{self.pasta}/{titulo_limpo}", "w", encoding="utf-8") as f:
             f.write(conteudo_limpo)
@@ -175,3 +206,4 @@ class CerebroBoosterzinho:
 
         pontuados.sort(key=lambda x: x[0], reverse=True)
         return "\n---\n".join([b for s, b in pontuados[:top_k]])
+    
