@@ -1,6 +1,7 @@
 import os
 import json
 import litellm
+import requests
 import streamlit as st
 from litellm import completion
 from knowledge_base import CerebroBoosterzinho
@@ -13,26 +14,32 @@ st.set_page_config(page_title="Boosterzinho", page_icon="🤖", layout="wide")
 st.title("🤖 Boosterzinho")
 
 PROVEDORES_IA = {
-    "ChatGPT (OpenAI)": {
-        "modelo": "gpt-4o-mini",
-        "env_var": "OPENAI_API_KEY",
-        "placeholder": "sk-proj-..."
-    },
     "Gemini (Google)": {
-        "modelo": "gemini/gemini-3.8-flash-lite",
+        "modelos": [
+            "gemini/gemini-3.8-flash-lite",
+            "gemini/gemini-3.8-flash",
+            "gemini/gemini-2.5-flash",
+            "gemini/gemini-2.0-flash"
+        ],
         "env_var": "GEMINI_API_KEY",
         "placeholder": "AIzaSy..."
     },
+    "Groq (Llama 3.3 - Ultra Rápido)": {
+        "modelos": ["groq/llama-3.3-70b-versatile"],
+        "env_var": "GROQ_API_KEY",
+        "placeholder": "gsk_..."
+    },
+    "ChatGPT (OpenAI)": {
+        "modelos": ["gpt-4o-mini"],
+        "env_var": "OPENAI_API_KEY",
+        "placeholder": "sk-proj-..."
+    },
     "Claude (Anthropic)": {
-        "modelo": "anthropic/claude-3-5-haiku-20241022",
+        "modelos": ["anthropic/claude-3-5-haiku-20241022"],
         "env_var": "ANTHROPIC_API_KEY",
         "placeholder": "sk-ant-..."
     }
 }
-
-@st.cache_resource
-def obter_cerebro():
-    return CerebroBoosterzinho()
 
 with st.sidebar:
     ias_selecionadas = st.multiselect(
@@ -58,15 +65,29 @@ with st.sidebar:
                 chaves_ativas[ia_nome] = chave
 
         if len(ias_selecionadas) > 1:
-            st.caption(f"⚡ Principal: **{ias_selecionadas[0]}** (as demais entram como reserva).")
+            st.caption(f"⚡ Principal: **{ias_selecionadas[0]}** (demais como reserva).")
     else:
         st.warning("Selecione pelo menos uma IA no Motor de Inteligência.")
+
+    st.divider()
+    st.subheader("🗄️ Banco de Dados (Supabase)")
+    sb_url = st.text_input("Supabase URL", value=os.getenv("SUPABASE_URL", ""), placeholder="https://xxxx.supabase.co")
+    sb_key = st.text_input("Supabase Anon Key", value=os.getenv("SUPABASE_KEY", ""), type="password", placeholder="eyJhbGci...")
+    if sb_url:
+        os.environ["SUPABASE_URL"] = sb_url
+    if sb_key:
+        os.environ["SUPABASE_KEY"] = sb_key
+
+    cerebro = CerebroBoosterzinho(supabase_url=sb_url, supabase_key=sb_key)
+    if cerebro.usando_nuvem:
+        st.success("🟢 Conectado ao Supabase (Memória Permanente)")
+    else:
+        st.caption("🟡 Modo local ativo (cole URL e Key acima para salvar na nuvem).")
 
     st.divider()
     st.subheader("🏥 Dados da Clínica (Kommo)")
     st.text_input("Subdomínio Kommo", placeholder="ex: clinicateste")
     st.text_input("Token Kommo", type="password", placeholder="Cole quando tiver a conta")
-    st.caption("Quando a clínica conectar o Kommo, os dados simulados ao lado serão gravados direto no CRM.")
 
 aba_chat, aba_cerebro = st.tabs(["💬 Simulador de Atendimento (SPIN)", "🧠 Cérebro (Ensinar o Robô)"])
 
@@ -106,7 +127,6 @@ with aba_chat:
                     st.write(prompt_usuario)
 
                 with st.spinner("Digitando..."):
-                    cerebro = obter_cerebro()
                     contexto = cerebro.buscar_contexto(prompt_usuario)
 
                     tools = [
@@ -160,18 +180,14 @@ with aba_chat:
                         ultimo_erro = None
                         for ia_atual in ias_prontas:
                             cfg = PROVEDORES_IA[ia_atual]
-                            modelos_tentar = [cfg["modelo"]]
-                            if "gemini" in cfg["modelo"]:
-                                modelos_tentar.append("gemini/gemini-3.8-flash")
-
-                            for mod in modelos_tentar:
+                            for mod in cfg["modelos"]:
                                 try:
                                     return completion(
                                         model=mod,
                                         messages=mensagens_atuais,
                                         tools=tools,
                                         api_key=chaves_ativas[ia_atual],
-                                        timeout=12,
+                                        timeout=10,
                                         num_retries=0,
                                         reasoning_effort="low"
                                     )
@@ -234,10 +250,10 @@ with aba_chat:
             }
             st.rerun()
 
-# --- ABA 2: EDITOR DO CÉREBRO (MULTI-FONTES) ---
+# --- ABA 2: EDITOR DO CÉREBRO (MULTI-FONTES + SUPABASE) ---
 with aba_cerebro:
     st.subheader("📚 Central de Aprendizado do Boosterzinho")
-    st.write("Adicione sites, artigos, PDFs ou edite as regras manuais. Tudo fica salvo na memória dele.")
+    st.write("Adicione sites, artigos, PDFs ou edite as regras manuais. Tudo fica salvo na nuvem (Supabase).")
 
     col_fontes, col_arquivos = st.columns([1.5, 1])
 
@@ -248,26 +264,26 @@ with aba_cerebro:
             horizontal=True
         )
 
-        os.makedirs("cerebro", exist_ok=True)
-
         if tipo_fonte == "🌐 Importar de Site / Artigo (URL)":
             url_artigo = st.text_input("Cole o link do site ou artigo:", placeholder="https://exemplo.com.br/artigo")
             nome_arquivo_url = st.text_input("Nome para salvar esse conhecimento:", placeholder="ex: artigo_dermatologia")
-            if st.button("📥 Extrair e Aprender Conteúdo do Site"):
+            if st.button("📥 Extrair e Salvar no Banco"):
                 if url_artigo and nome_arquivo_url:
                     try:
-                        import requests
-                        from bs4 import BeautifulSoup
-                        resp = requests.get(url_artigo, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-                        soup = BeautifulSoup(resp.text, "html.parser")
-                        for tag in soup(["script", "style", "nav", "footer", "header"]):
-                            tag.decompose()
-                        texto_limpo = "\n".join([linha.strip() for linha in soup.get_text().splitlines() if linha.strip()])
+                        resp = requests.get(f"https://r.jina.ai/{url_artigo}", timeout=20)
+                        if resp.status_code == 200 and len(resp.text.strip()) > 100:
+                            texto_limpo = resp.text.strip()
+                        else:
+                            from bs4 import BeautifulSoup
+                            r_html = requests.get(url_artigo, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+                            soup = BeautifulSoup(r_html.text, "html.parser")
+                            for tag in soup(["script", "style", "nav", "footer", "header"]):
+                                tag.decompose()
+                            texto_limpo = "\n".join([l.strip() for l in soup.get_text().splitlines() if l.strip()])
+
                         nome_limpo = nome_arquivo_url.strip().replace(" ", "_") + ".md"
-                        with open(f"cerebro/{nome_limpo}", "w", encoding="utf-8") as f:
-                            f.write(f"## Fonte: {url_artigo}\n\n{texto_limpo}")
-                        st.cache_resource.clear()
-                        st.success(f"Site aprendido com sucesso e salvo em `cerebro/{nome_limpo}`!")
+                        cerebro.salvar_documento(nome_limpo, f"## Fonte: {url_artigo}\n\n{texto_limpo}", origem="url")
+                        st.success(f"Site salvo permanentemente como `{nome_limpo}`!")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Não foi possível ler o site: {e}")
@@ -276,7 +292,7 @@ with aba_cerebro:
 
         elif tipo_fonte == "📄 Enviar PDF ou TXT":
             arquivo_subido = st.file_uploader("Escolha um arquivo PDF ou TXT", type=["pdf", "txt", "md"])
-            if arquivo_subido and st.button("📥 Processar e Aprender Arquivo"):
+            if arquivo_subido and st.button("📥 Processar e Salvar no Banco"):
                 texto_extraido = ""
                 if arquivo_subido.name.endswith(".pdf"):
                     from pypdf import PdfReader
@@ -287,37 +303,29 @@ with aba_cerebro:
                     texto_extraido = arquivo_subido.read().decode("utf-8", errors="ignore")
 
                 nome_salvo = arquivo_subido.name.rsplit(".", 1)[0].replace(" ", "_") + ".md"
-                with open(f"cerebro/{nome_salvo}", "w", encoding="utf-8") as f:
-                    f.write(f"## Documento: {arquivo_subido.name}\n\n{texto_extraido}")
-                st.cache_resource.clear()
-                st.success(f"Documento `{arquivo_subido.name}` absorvido pelo Boosterzinho!")
+                cerebro.salvar_documento(nome_salvo, f"## Documento: {arquivo_subido.name}\n\n{texto_extraido}", origem="arquivo")
+                st.success(f"Documento `{arquivo_subido.name}` salvo permanentemente!")
                 st.rerun()
 
         else:
-            caminho_md = "cerebro/01_base_conhecimento.md"
-            conteudo_atual = ""
-            if os.path.exists(caminho_md):
-                with open(caminho_md, "r", encoding="utf-8") as f:
-                    conteudo_atual = f.read()
-
+            conteudo_atual = cerebro.obter_documento("01_base_conhecimento.md")
             novo_conteudo = st.text_area("Regras, Médicos, Valores e Objeções:", value=conteudo_atual, height=320)
             if st.button("💾 Salvar Regras Manuais"):
-                with open(caminho_md, "w", encoding="utf-8") as f:
-                    f.write(novo_conteudo)
-                st.cache_resource.clear()
-                st.success("Regras atualizadas!")
+                cerebro.salvar_documento("01_base_conhecimento.md", novo_conteudo, origem="manual")
+                st.success("Regras salvas permanentemente!")
 
     with col_arquivos:
-        st.subheader("🗂️ Arquivos na Memória")
-        arquivos_ativos = os.listdir("cerebro") if os.path.exists("cerebro") else []
-        if not arquivos_ativos:
-            st.info("Nenhum arquivo na memória ainda.")
+        st.subheader("🗂️ Conhecimentos Salvos")
+        docs = cerebro.listar_documentos()
+        if not docs:
+            st.info("Nenhum documento salvo ainda.")
         else:
-            for arq in sorted(arquivos_ativos):
+            for d in docs:
+                titulo = d["titulo"]
                 col_a, col_b = st.columns([4, 1])
-                col_a.write(f"📄 `{arq}`")
-                if arq != "01_base_conhecimento.md":
-                    if col_b.button("🗑️", key=f"del_{arq}", help="Remover arquivo"):
-                        os.remove(f"cerebro/{arq}")
-                        st.cache_resource.clear()
+                col_a.write(f"📄 `{titulo}`")
+                if titulo != "01_base_conhecimento.md":
+                    if col_b.button("🗑️", key=f"del_{titulo}", help="Remover documento"):
+                        cerebro.remover_documento(titulo)
                         st.rerun()
+                        
