@@ -153,7 +153,7 @@ with st.sidebar:
         st.success(f"🟢 IA Ativa: {nomes_ativos}")
     else:
         st.warning("🟡 Nenhuma API Key de IA")
-    st.caption("Configure chaves na aba **🔑 Chaves & Conexões Globais**.")
+    st.caption("Configure chaves na aba **🔑 Chaves & Conexões**.")
 
 conta_ativa_id = st.session_state.pasta_clinica_ativa
 cerebro = CerebroBoosterzinho(account_id=conta_ativa_id, supabase_url=sb_url, supabase_key=sb_key)
@@ -183,16 +183,16 @@ with col_top2:
     st.metric("Clínicas", len(contas))
 
 aba_pastas, aba_arquivos, aba_chat, aba_config, aba_chaves = st.tabs([
-    "🗂️ Todas as Pastas",
-    "📄 Arquivos & Objeções da Pasta",
-    "💬 Simulador de Atendimento",
-    "⚙️ Configurações Kommo",
-    "🔑 Chaves & Conexões Globais"
+    "🏥 Clínicas",
+    "📄 Arquivos & Objeções",
+    "💬 Simulador",
+    "⚙️ Config. Kommo",
+    "🔑 Chaves & Conexões"
 ])
 
-# --- ABA 1: VISÃO ESTILO EXPLORER DE TODAS AS PASTAS DE CLÍNICAS ---
+# --- ABA 1: VISÃO ESTILO EXPLORER DE TODAS AS CLÍNICAS ---
 with aba_pastas:
-    st.subheader("🗂️ Diretório de Clínicas Cadastradas")
+    st.subheader("🏥 Clínicas Cadastradas")
     st.caption("Cada clínica possui uma pasta isolada com seus próprios preços, PDFs, sites, quebra de objeções e credenciais Kommo.")
 
     cols_grid = st.columns(3)
@@ -340,7 +340,7 @@ with aba_chat:
         if prompt_usuario:
             ias_prontas = [ia for ia in ias_selecionadas if ia in chaves_ativas]
             if not ias_prontas:
-                st.error("Preencha pelo menos uma API Key na aba '🔑 Chaves & Conexões Globais'.")
+                st.error("Preencha pelo menos uma API Key na aba '🔑 Chaves & Conexões'.")
             else:
                 st.session_state.mensagens_teste.append({"role": "user", "content": prompt_usuario})
                 with st.chat_message("user"):
