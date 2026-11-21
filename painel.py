@@ -241,43 +241,35 @@ with aba_pastas:
                 st.write(f"📄 **{qtd_docs}** arquivo(s) na pasta")
                 st.write(f"🔗 Kommo: `{c.get('kommo_subdominio') or 'Pendente'}`")
 
-                if cid == "padrao":
+                b1, b2 = st.columns([3, 1])
+                with b1:
                     if aberta:
-                        st.button("✅ Pasta Aberta", key=f"card_open_{cid}", disabled=True, use_container_width=True)
+                        st.button("✅ Aberta", key=f"card_open_{cid}", disabled=True, use_container_width=True)
                     else:
-                        if st.button("📂 Abrir Pasta", key=f"card_open_{cid}", use_container_width=True):
+                        if st.button("📂 Abrir", key=f"card_open_{cid}", use_container_width=True):
                             st.session_state.pasta_clinica_ativa = cid
                             st.rerun()
-                else:
-                    b1, b2 = st.columns([3, 1])
-                    with b1:
-                        if aberta:
-                            st.button("✅ Aberta", key=f"card_open_{cid}", disabled=True, use_container_width=True)
-                        else:
-                            if st.button("📂 Abrir", key=f"card_open_{cid}", use_container_width=True):
-                                st.session_state.pasta_clinica_ativa = cid
-                                st.rerun()
-                    with b2:
-                        if st.button("🗑️", key=f"card_del_{cid}", help="Excluir esta pasta", use_container_width=True):
-                            st.session_state[f"confirmar_del_{cid}"] = True
+                with b2:
+                    if st.button("🗑️", key=f"card_del_{cid}", help="Excluir esta pasta", use_container_width=True):
+                        st.session_state[f"confirmar_del_{cid}"] = True
 
-                    if st.session_state.get(f"confirmar_del_{cid}"):
-                        st.warning(f"Excluir **{c['nome_empresa']}** e todos os seus arquivos?")
-                        c_sim, c_nao = st.columns(2)
-                        with c_sim:
-                            if st.button("Sim, excluir", key=f"yes_del_{cid}", type="primary", use_container_width=True):
-                                try:
-                                    cerebro_base.excluir_conta(cid)
-                                    st.session_state.pop(f"confirmar_del_{cid}", None)
-                                    if st.session_state.pasta_clinica_ativa == cid:
-                                        st.session_state.pasta_clinica_ativa = "padrao"
-                                    st.rerun()
-                                except Exception as e_del:
-                                    st.error(str(e_del))
-                        with c_nao:
-                            if st.button("Cancelar", key=f"no_del_{cid}", use_container_width=True):
+                if st.session_state.get(f"confirmar_del_{cid}"):
+                    st.warning(f"Excluir **{c['nome_empresa']}** e todos os seus arquivos?")
+                    c_sim, c_nao = st.columns(2)
+                    with c_sim:
+                        if st.button("Sim, excluir", key=f"yes_del_{cid}", type="primary", use_container_width=True):
+                            try:
+                                cerebro_base.excluir_conta(cid)
                                 st.session_state.pop(f"confirmar_del_{cid}", None)
+                                restantes = [x["account_id"] for x in cerebro_base.listar_contas() if x["account_id"] != cid]
+                                st.session_state.pasta_clinica_ativa = restantes[0] if restantes else "nova_clinica"
                                 st.rerun()
+                            except Exception as e_del:
+                                st.error(str(e_del))
+                    with c_nao:
+                        if st.button("Cancelar", key=f"no_del_{cid}", use_container_width=True):
+                            st.session_state.pop(f"confirmar_del_{cid}", None)
+                            st.rerun()
 
 # --- ABA 2: CONTEÚDO DENTRO DA PASTA DA CLÍNICA ---
 with aba_arquivos:
@@ -591,17 +583,17 @@ with aba_config:
             st.success("Configurações da clínica atualizadas!")
             st.rerun()
 
-    if conta_ativa_id != "padrao":
-        st.divider()
-        with st.expander("🗑️ Zona de Perigo — Excluir esta Pasta"):
-            st.warning(f"Isso apagará permanentemente a pasta **{dados_conta['nome_empresa']}** e todos os PDFs, sites e regras salvos nela.")
-            if st.button("🗑️ Excluir Pasta Permanentemente", type="primary", key="btn_excluir_aba_config"):
-                try:
-                    cerebro_base.excluir_conta(conta_ativa_id)
-                    st.session_state.pasta_clinica_ativa = "padrao"
-                    st.rerun()
-                except Exception as e_cfg_del:
-                    st.error(str(e_cfg_del))
+    st.divider()
+    with st.expander("🗑️ Zona de Perigo — Excluir esta Pasta"):
+        st.warning(f"Isso apagará permanentemente a pasta **{dados_conta['nome_empresa']}** e todos os PDFs, sites e regras salvos nela.")
+        if st.button("🗑️ Excluir Pasta Permanentemente", type="primary", key="btn_excluir_aba_config"):
+            try:
+                cerebro_base.excluir_conta(conta_ativa_id)
+                restantes = [x["account_id"] for x in cerebro_base.listar_contas() if x["account_id"] != conta_ativa_id]
+                st.session_state.pasta_clinica_ativa = restantes[0] if restantes else "nova_clinica"
+                st.rerun()
+            except Exception as e_cfg_del:
+                st.error(str(e_cfg_del))
 
 # --- ABA 5: SESSÃO SEPARADA PARA CHAVES & CONEXÕES GLOBAIS ---
 with aba_chaves:
