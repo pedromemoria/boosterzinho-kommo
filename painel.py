@@ -119,25 +119,28 @@ with st.sidebar:
             st.rerun()
 
     with st.expander("➕ Nova Pasta de Clínica"):
-        with st.form("form_nova_pasta_clinica"):
+        with st.form("form_nova_pasta_clinica", clear_on_submit=True):
             novo_id = st.text_input("ID da Pasta (sem espaços)", placeholder="ex: clinica_prime")
             novo_nome = st.text_input("Nome da Clínica", placeholder="ex: Clínica Prime")
             novo_sub = st.text_input("Subdomínio Kommo", placeholder="ex: clinicaprime")
             novo_tok = st.text_input("Token Kommo", type="password")
-            if st.form_submit_button("📁 Criar Pasta"):
-                if novo_id and novo_nome:
+            if st.form_submit_button("📁 Criar Pasta", use_container_width=True):
+                if novo_id.strip() and novo_nome.strip():
                     id_limpo = novo_id.strip().lower().replace(" ", "_")
-                    cerebro_base.salvar_conta({
-                        "account_id": id_limpo,
-                        "nome_empresa": novo_nome.strip(),
-                        "kommo_subdominio": novo_sub.strip(),
-                        "kommo_token": novo_tok.strip(),
-                        "prompt_persona": "Você é um consultor comercial especialista em atendimento pelo WhatsApp da clínica. Conduza o lead do primeiro contato até o agendamento usando SPIN Selling com empatia, firmeza e quebra de objeções.",
-                        "etapa_convertido_id": ""
-                    })
-                    st.session_state.pasta_clinica_ativa = id_limpo
-                    st.success(f"Pasta `{novo_nome}` criada!")
-                    st.rerun()
+                    try:
+                        cerebro_base.salvar_conta({
+                            "account_id": id_limpo,
+                            "nome_empresa": novo_nome.strip(),
+                            "kommo_subdominio": novo_sub.strip(),
+                            "kommo_token": novo_tok.strip(),
+                            "prompt_persona": "Você é um consultor comercial especialista em atendimento pelo WhatsApp da clínica. Conduza o lead do primeiro contato até o agendamento usando SPIN Selling com empatia, firmeza e quebra de objeções.",
+                            "etapa_convertido_id": ""
+                        })
+                        st.session_state.pasta_clinica_ativa = id_limpo
+                        st.rerun()
+                    except Exception as err_pasta:
+                        st.session_state.pasta_clinica_ativa = id_limpo
+                        st.error(str(err_pasta))
                 else:
                     st.error("Preencha o ID e o Nome da Clínica.")
 
@@ -146,14 +149,13 @@ with st.sidebar:
     if cerebro_base.usando_nuvem:
         st.success("🟢 Supabase Conectado")
     else:
-        st.warning("🟡 Supabase Pendente")
+        st.warning("🟡 Modo Local (Conecte Supabase na aba Chaves)")
 
     if chaves_ativas:
         nomes_ativos = ", ".join([k.split()[0] for k in chaves_ativas.keys()])
         st.success(f"🟢 IA Ativa: {nomes_ativos}")
     else:
         st.warning("🟡 Nenhuma API Key de IA")
-    st.caption("Configure chaves na aba **🔑 Chaves & Conexões**.")
 
 conta_ativa_id = st.session_state.pasta_clinica_ativa
 cerebro = CerebroBoosterzinho(account_id=conta_ativa_id, supabase_url=sb_url, supabase_key=sb_key)
@@ -195,6 +197,36 @@ with aba_pastas:
     st.subheader("🏥 Clínicas Cadastradas")
     st.caption("Cada clínica possui uma pasta isolada com seus próprios preços, PDFs, sites, quebra de objeções e credenciais Kommo.")
 
+    with st.expander("➕ Cadastrar Nova Clínica / Criar Pasta", expanded=False):
+        with st.form("form_nova_clinica_principal", clear_on_submit=True):
+            c_f1, c_f2 = st.columns(2)
+            with c_f1:
+                p_id = st.text_input("ID da Pasta (sem espaços)", placeholder="ex: clinica_prime")
+                p_sub = st.text_input("Subdomínio Kommo (opcional)", placeholder="ex: clinicaprime")
+            with c_f2:
+                p_nome = st.text_input("Nome da Clínica", placeholder="ex: Clínica Prime")
+                p_tok = st.text_input("Token Kommo (opcional)", type="password")
+            if st.form_submit_button("📁 Criar Pasta da Clínica"):
+                if p_id.strip() and p_nome.strip():
+                    id_limpo = p_id.strip().lower().replace(" ", "_")
+                    try:
+                        cerebro_base.salvar_conta({
+                            "account_id": id_limpo,
+                            "nome_empresa": p_nome.strip(),
+                            "kommo_subdominio": p_sub.strip(),
+                            "kommo_token": p_tok.strip(),
+                            "prompt_persona": "Você é um consultor comercial especialista em atendimento pelo WhatsApp da clínica. Conduza o lead do primeiro contato até o agendamento usando SPIN Selling com empatia, firmeza e quebra de objeções.",
+                            "etapa_convertido_id": ""
+                        })
+                        st.session_state.pasta_clinica_ativa = id_limpo
+                        st.success(f"Pasta `{p_nome}` criada com sucesso!")
+                        st.rerun()
+                    except Exception as e:
+                        st.session_state.pasta_clinica_ativa = id_limpo
+                        st.warning(str(e))
+                else:
+                    st.error("Informe o ID da Pasta e o Nome da Clínica.")
+
     cols_grid = st.columns(3)
     for idx, c in enumerate(contas):
         cid = c["account_id"]
@@ -208,12 +240,44 @@ with aba_pastas:
                 st.caption(f"ID: `{cid}`")
                 st.write(f"📄 **{qtd_docs}** arquivo(s) na pasta")
                 st.write(f"🔗 Kommo: `{c.get('kommo_subdominio') or 'Pendente'}`")
-                if aberta:
-                    st.button("✅ Pasta Aberta", key=f"card_open_{cid}", disabled=True, use_container_width=True)
+
+                if cid == "padrao":
+                    if aberta:
+                        st.button("✅ Pasta Aberta", key=f"card_open_{cid}", disabled=True, use_container_width=True)
+                    else:
+                        if st.button("📂 Abrir Pasta", key=f"card_open_{cid}", use_container_width=True):
+                            st.session_state.pasta_clinica_ativa = cid
+                            st.rerun()
                 else:
-                    if st.button("📂 Abrir Pasta", key=f"card_open_{cid}", use_container_width=True):
-                        st.session_state.pasta_clinica_ativa = cid
-                        st.rerun()
+                    b1, b2 = st.columns([3, 1])
+                    with b1:
+                        if aberta:
+                            st.button("✅ Aberta", key=f"card_open_{cid}", disabled=True, use_container_width=True)
+                        else:
+                            if st.button("📂 Abrir", key=f"card_open_{cid}", use_container_width=True):
+                                st.session_state.pasta_clinica_ativa = cid
+                                st.rerun()
+                    with b2:
+                        if st.button("🗑️", key=f"card_del_{cid}", help="Excluir esta pasta", use_container_width=True):
+                            st.session_state[f"confirmar_del_{cid}"] = True
+
+                    if st.session_state.get(f"confirmar_del_{cid}"):
+                        st.warning(f"Excluir **{c['nome_empresa']}** e todos os seus arquivos?")
+                        c_sim, c_nao = st.columns(2)
+                        with c_sim:
+                            if st.button("Sim, excluir", key=f"yes_del_{cid}", type="primary", use_container_width=True):
+                                try:
+                                    cerebro_base.excluir_conta(cid)
+                                    st.session_state.pop(f"confirmar_del_{cid}", None)
+                                    if st.session_state.pasta_clinica_ativa == cid:
+                                        st.session_state.pasta_clinica_ativa = "padrao"
+                                    st.rerun()
+                                except Exception as e_del:
+                                    st.error(str(e_del))
+                        with c_nao:
+                            if st.button("Cancelar", key=f"no_del_{cid}", use_container_width=True):
+                                st.session_state.pop(f"confirmar_del_{cid}", None)
+                                st.rerun()
 
 # --- ABA 2: CONTEÚDO DENTRO DA PASTA DA CLÍNICA ---
 with aba_arquivos:
@@ -524,8 +588,20 @@ with aba_config:
                 "etapa_convertido_id": ed_etapa.strip(),
                 "prompt_persona": ed_persona.strip()
             })
-            st.success("Configurações da clínica atualizadas no Supabase!")
+            st.success("Configurações da clínica atualizadas!")
             st.rerun()
+
+    if conta_ativa_id != "padrao":
+        st.divider()
+        with st.expander("🗑️ Zona de Perigo — Excluir esta Pasta"):
+            st.warning(f"Isso apagará permanentemente a pasta **{dados_conta['nome_empresa']}** e todos os PDFs, sites e regras salvos nela.")
+            if st.button("🗑️ Excluir Pasta Permanentemente", type="primary", key="btn_excluir_aba_config"):
+                try:
+                    cerebro_base.excluir_conta(conta_ativa_id)
+                    st.session_state.pasta_clinica_ativa = "padrao"
+                    st.rerun()
+                except Exception as e_cfg_del:
+                    st.error(str(e_cfg_del))
 
 # --- ABA 5: SESSÃO SEPARADA PARA CHAVES & CONEXÕES GLOBAIS ---
 with aba_chaves:
