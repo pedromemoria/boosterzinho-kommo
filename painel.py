@@ -10,7 +10,7 @@ from knowledge_base import CerebroBoosterzinho
 litellm.drop_params = True
 litellm.num_retries = 0
 
-st.set_page_config(page_title="Boosterzinho — Pastas por Clínica", page_icon="📁", layout="wide")
+st.set_page_config(page_title="Boosterzinho", page_icon="🤖", layout="wide")
 
 def obter_modelos_groq_ativos(api_key: str):
     """Consulta diretamente na API do Groq quais modelos de texto estão habilitados para esta chave."""
@@ -65,22 +65,41 @@ PROVEDORES_IA = {
     }
 }
 
-# --- BARRA LATERAL: NAVEGADOR DE PASTAS DAS CLÍNICAS ---
+# --- INICIALIZAÇÃO PERSISTENTE DAS CREDENCIAIS GLOBAIS ---
+if "cfg_sb_url" not in st.session_state:
+    st.session_state.cfg_sb_url = os.getenv("SUPABASE_URL", "").strip()
+if "cfg_sb_key" not in st.session_state:
+    st.session_state.cfg_sb_key = os.getenv("SUPABASE_KEY", "").strip()
+if "cfg_ias_selecionadas" not in st.session_state:
+    st.session_state.cfg_ias_selecionadas = ["Groq (Auto-Detectado - Ultra Rápido)", "Gemini (Google)"]
+if "cfg_chaves_ia" not in st.session_state:
+    st.session_state.cfg_chaves_ia = {
+        cfg["env_var"]: os.getenv(cfg["env_var"], "").strip()
+        for cfg in PROVEDORES_IA.values()
+        if os.getenv(cfg["env_var"], "").strip()
+    }
+
+sb_url = st.session_state.cfg_sb_url
+sb_key = st.session_state.cfg_sb_key
+if sb_url:
+    os.environ["SUPABASE_URL"] = sb_url
+if sb_key:
+    os.environ["SUPABASE_KEY"] = sb_key
+
+ias_selecionadas = st.session_state.cfg_ias_selecionadas
+chaves_ativas = {}
+for ia_nome in ias_selecionadas:
+    env_v = PROVEDORES_IA[ia_nome]["env_var"]
+    val_chave = st.session_state.cfg_chaves_ia.get(env_v, "").strip()
+    if val_chave:
+        os.environ[env_v] = val_chave
+        chaves_ativas[ia_nome] = val_chave
+
+cerebro_base = CerebroBoosterzinho(account_id="padrao", supabase_url=sb_url, supabase_key=sb_key)
+
+# --- BARRA LATERAL LIMPA: APENAS PASTAS DAS CLÍNICAS E STATUS ---
 with st.sidebar:
-    st.subheader("🗄️ Banco de Dados (Supabase)")
-    sb_url = st.text_input("Supabase URL", value=os.getenv("SUPABASE_URL", ""), placeholder="https://xxxx.supabase.co").strip()
-    sb_key = st.text_input("Supabase Anon Key", value=os.getenv("SUPABASE_KEY", ""), type="password", placeholder="sb_publishable_...").strip()
-    if sb_url:
-        os.environ["SUPABASE_URL"] = sb_url
-    if sb_key:
-        os.environ["SUPABASE_KEY"] = sb_key
-
-    cerebro_base = CerebroBoosterzinho(account_id="padrao", supabase_url=sb_url, supabase_key=sb_key)
-    if cerebro_base.usando_nuvem:
-        st.success("🟢 Supabase Conectado")
-    else:
-        st.warning("🟡 Cole URL e Key do Supabase acima")
-
+    st.markdown("## 🤖 Boosterzinho")
     st.divider()
     st.subheader("📁 Pastas das Clínicas")
 
@@ -90,7 +109,6 @@ with st.sidebar:
     if "pasta_clinica_ativa" not in st.session_state or st.session_state.pasta_clinica_ativa not in ids_disponiveis:
         st.session_state.pasta_clinica_ativa = ids_disponiveis[0]
 
-    # Lista visual estilo gerenciador de pastas
     for c in contas:
         cid = c["account_id"]
         esta_aberta = (cid == st.session_state.pasta_clinica_ativa)
@@ -123,60 +141,53 @@ with st.sidebar:
                 else:
                     st.error("Preencha o ID e o Nome da Clínica.")
 
-    conta_ativa_id = st.session_state.pasta_clinica_ativa
-    cerebro = CerebroBoosterzinho(account_id=conta_ativa_id, supabase_url=sb_url, supabase_key=sb_key)
-    dados_conta = cerebro.obter_conta(conta_ativa_id)
-
-    if st.session_state.get("ultima_conta_selecionada") != conta_ativa_id:
-        st.session_state.ultima_conta_selecionada = conta_ativa_id
-        st.session_state.mensagens_teste = []
-        st.session_state.ultimas_fontes = ""
-        st.session_state.ficha_crm = {
-            "Nome_Lead": "—",
-            "Interesse_Produto": "—",
-            "Valor_Oferta": "—",
-            "Objecao_Detectada": "Nenhuma",
-            "Status_Funil": "Novo Lead"
-        }
-
     st.divider()
-    st.subheader("⚡ Motor de Inteligência")
-    ias_selecionadas = st.multiselect(
-        "Ordem de Prioridade (Fallback):",
-        options=list(PROVEDORES_IA.keys()),
-        default=["Groq (Auto-Detectado - Ultra Rápido)", "Gemini (Google)"]
-    )
+    st.caption("📡 **Status do Sistema**")
+    if cerebro_base.usando_nuvem:
+        st.success("🟢 Supabase Conectado")
+    else:
+        st.warning("🟡 Supabase Pendente")
 
-    chaves_ativas = {}
-    for ia_nome in ias_selecionadas:
-        cfg = PROVEDORES_IA[ia_nome]
-        chave = st.text_input(
-            f"API Key — {ia_nome.split()[0]}",
-            value=os.getenv(cfg["env_var"], ""),
-            type="password",
-            placeholder=cfg["placeholder"],
-            key=f"key_{cfg['env_var']}"
-        ).strip()
-        if chave:
-            os.environ[cfg["env_var"]] = chave
-            chaves_ativas[ia_nome] = chave
+    if chaves_ativas:
+        nomes_ativos = ", ".join([k.split()[0] for k in chaves_ativas.keys()])
+        st.success(f"🟢 IA Ativa: {nomes_ativos}")
+    else:
+        st.warning("🟡 Nenhuma API Key de IA")
+    st.caption("Configure chaves na aba **🔑 Chaves & Conexões Globais**.")
 
-# --- CABEÇALHO DA PASTA ABERTA ---
+conta_ativa_id = st.session_state.pasta_clinica_ativa
+cerebro = CerebroBoosterzinho(account_id=conta_ativa_id, supabase_url=sb_url, supabase_key=sb_key)
+dados_conta = cerebro.obter_conta(conta_ativa_id)
+
+if st.session_state.get("ultima_conta_selecionada") != conta_ativa_id:
+    st.session_state.ultima_conta_selecionada = conta_ativa_id
+    st.session_state.mensagens_teste = []
+    st.session_state.ultimas_fontes = ""
+    st.session_state.ficha_crm = {
+        "Nome_Lead": "—",
+        "Interesse_Produto": "—",
+        "Valor_Oferta": "—",
+        "Objecao_Detectada": "Nenhuma",
+        "Status_Funil": "Novo Lead"
+    }
+
+# --- CABEÇALHO PRINCIPAL BOOSTERZINHO + PASTA ABERTA ---
 docs_conta_atual = cerebro.listar_documentos()
 sub_kommo_txt = dados_conta.get("kommo_subdominio") or "Não vinculado"
 
-col_top1, col_top2 = st.columns([3, 1])
+col_top1, col_top2 = st.columns([3.5, 1])
 with col_top1:
-    st.title(f"📂 {dados_conta['nome_empresa']}")
-    st.caption(f"Pasta: `/{conta_ativa_id}`  •  Subdomínio Kommo: `{sub_kommo_txt}`  •  📄 **{len(docs_conta_atual)} arquivo(s)** nesta pasta")
+    st.title("🤖 Boosterzinho")
+    st.caption(f"📂 Pasta Aberta: **{dados_conta['nome_empresa']}** (`/{conta_ativa_id}`)  •  🔗 Kommo: `{sub_kommo_txt}`  •  📄 **{len(docs_conta_atual)} arquivo(s)**")
 with col_top2:
-    st.metric("Total de Clínicas", len(contas))
+    st.metric("Clínicas", len(contas))
 
-aba_pastas, aba_arquivos, aba_chat, aba_config = st.tabs([
+aba_pastas, aba_arquivos, aba_chat, aba_config, aba_chaves = st.tabs([
     "🗂️ Todas as Pastas",
     "📄 Arquivos & Objeções da Pasta",
     "💬 Simulador de Atendimento",
-    "⚙️ Configurações Kommo"
+    "⚙️ Configurações Kommo",
+    "🔑 Chaves & Conexões Globais"
 ])
 
 # --- ABA 1: VISÃO ESTILO EXPLORER DE TODAS AS PASTAS DE CLÍNICAS ---
@@ -329,7 +340,7 @@ with aba_chat:
         if prompt_usuario:
             ias_prontas = [ia for ia in ias_selecionadas if ia in chaves_ativas]
             if not ias_prontas:
-                st.error("Preencha pelo menos uma API Key na barra lateral.")
+                st.error("Preencha pelo menos uma API Key na aba '🔑 Chaves & Conexões Globais'.")
             else:
                 st.session_state.mensagens_teste.append({"role": "user", "content": prompt_usuario})
                 with st.chat_message("user"):
@@ -515,3 +526,66 @@ with aba_config:
             })
             st.success("Configurações da clínica atualizadas no Supabase!")
             st.rerun()
+
+# --- ABA 5: SESSÃO SEPARADA PARA CHAVES & CONEXÕES GLOBAIS ---
+with aba_chaves:
+    st.subheader("🔑 Chaves de API & Conexões Globais do Sistema")
+    st.caption("Configure aqui uma única vez o banco de dados na nuvem e os provedores de IA que atenderão todas as pastas de clínicas.")
+
+    col_conn1, col_conn2 = st.columns(2)
+
+    with col_conn1:
+        with st.container(border=True):
+            st.markdown("### 🗄️ Banco de Dados (Supabase)")
+            novo_sb_url = st.text_input(
+                "Supabase URL",
+                value=st.session_state.cfg_sb_url,
+                placeholder="https://xxxx.supabase.co"
+            )
+            novo_sb_key = st.text_input(
+                "Supabase Anon Key",
+                value=st.session_state.cfg_sb_key,
+                type="password",
+                placeholder="sb_publishable_..."
+            )
+            if st.button("💾 Aplicar Conexão Supabase", use_container_width=True):
+                st.session_state.cfg_sb_url = novo_sb_url.strip()
+                st.session_state.cfg_sb_key = novo_sb_key.strip()
+                st.success("Credenciais do Supabase aplicadas!")
+                st.rerun()
+
+            if cerebro_base.usando_nuvem:
+                st.success("🟢 Conectado ao Supabase")
+            else:
+                st.warning("🟡 Aguardando URL e Key válidas")
+
+    with col_conn2:
+        with st.container(border=True):
+            st.markdown("### ⚡ Provedores de Inteligência Artificial")
+            novas_ias = st.multiselect(
+                "Ordem de Prioridade (Fallback automático):",
+                options=list(PROVEDORES_IA.keys()),
+                default=st.session_state.cfg_ias_selecionadas
+            )
+
+            novas_chaves = dict(st.session_state.cfg_chaves_ia)
+            for ia_nome in novas_ias:
+                cfg = PROVEDORES_IA[ia_nome]
+                env_v = cfg["env_var"]
+                val_atual = novas_chaves.get(env_v, "")
+                val_digitado = st.text_input(
+                    f"API Key — {ia_nome.split()[0]}",
+                    value=val_atual,
+                    type="password",
+                    placeholder=cfg["placeholder"],
+                    key=f"global_input_{env_v}"
+                )
+                novas_chaves[env_v] = val_digitado.strip()
+
+            if st.button("💾 Salvar Chaves de IA", use_container_width=True):
+                st.session_state.cfg_ias_selecionadas = novas_ias
+                st.session_state.cfg_chaves_ia = {k: v for k, v in novas_chaves.items() if v}
+                st.success("Chaves e ordem de IA atualizadas!")
+                st.rerun()
+
+    st.info("💡 **Dica de Produção:** Para nunca precisar redigitar essas chaves ao reiniciar o servidor, salve `SUPABASE_URL`, `SUPABASE_KEY` e `GROQ_API_KEY` nos **Secrets** do Streamlit Cloud (`Manage app > Settings > Secrets`).")
