@@ -2,6 +2,7 @@ fastapi
 uvicorn
 requests
 openai
+litellm
 numpy
 python-dotenv
 streamlit
