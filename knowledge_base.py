@@ -3,8 +3,9 @@ import glob
 import re
 
 class CerebroBoosterzinho:
-    def __init__(self, pasta="cerebro", supabase_url=None, supabase_key=None):
-        self.pasta = pasta
+    def __init__(self, account_id="padrao", pasta="cerebro", supabase_url=None, supabase_key=None):
+        self.account_id = account_id.strip() or "padrao"
+        self.pasta = os.path.join(pasta, self.account_id)
         self.supabase_url = supabase_url or os.getenv("SUPABASE_URL", "")
         self.supabase_key = supabase_key or os.getenv("SUPABASE_KEY", "")
         self.client = None
@@ -21,12 +22,54 @@ class CerebroBoosterzinho:
 
         self.carregar()
 
-    def carregar(self):
-        self.blocos = []
-        # 1. Tenta carregar da nuvem (Supabase)
+    # --- GESTÃO DE CONTAS DO KOMMO ---
+    def listar_contas(self):
         if self.client:
             try:
-                resp = self.client.table("documentos_cerebro").select("titulo, conteudo").execute()
+                resp = self.client.table("clientes_kommo").select("*").order("nome_empresa").execute()
+                if resp.data:
+                    return resp.data
+            except Exception:
+                pass
+        return [{
+            "account_id": "padrao",
+            "nome_empresa": "Conta Principal (Padrão)",
+            "kommo_subdominio": "",
+            "kommo_token": "",
+            "prompt_persona": "",
+            "etapa_convertido_id": ""
+        }]
+
+    def obter_conta(self, account_id: str):
+        if self.client:
+            try:
+                resp = self.client.table("clientes_kommo").select("*").eq("account_id", account_id).execute()
+                if resp.data:
+                    return resp.data[0]
+            except Exception:
+                pass
+        return {
+            "account_id": account_id,
+            "nome_empresa": account_id,
+            "kommo_subdominio": "",
+            "kommo_token": "",
+            "prompt_persona": "",
+            "etapa_convertido_id": ""
+        }
+
+    def salvar_conta(self, dados: dict):
+        if self.client:
+            self.client.table("clientes_kommo").upsert(dados, on_conflict="account_id").execute()
+
+    # --- GESTÃO DE CONHECIMENTO ISOLADO POR CONTA ---
+    def carregar(self):
+        self.blocos = []
+        if self.client:
+            try:
+                resp = self.client.table("documentos_cerebro") \
+                    .select("titulo, conteudo") \
+                    .eq("account_id", self.account_id) \
+                    .execute()
                 for item in (resp.data or []):
                     titulo = item["titulo"]
                     conteudo = item["conteudo"]
@@ -38,7 +81,7 @@ class CerebroBoosterzinho:
             except Exception:
                 pass
 
-        # 2. Fallback local (pasta cerebro/)
+        # Fallback local isolado por pasta da conta
         arquivos = glob.glob(f"{self.pasta}/**/*.md", recursive=True) + \
                    glob.glob(f"{self.pasta}/**/*.txt", recursive=True)
         for caminho in arquivos:
@@ -51,8 +94,13 @@ class CerebroBoosterzinho:
     def salvar_documento(self, titulo: str, conteudo: str, origem: str = "manual"):
         if self.client:
             self.client.table("documentos_cerebro").upsert(
-                {"titulo": titulo, "conteudo": conteudo, "origem": origem},
-                on_conflict="titulo"
+                {
+                    "account_id": self.account_id,
+                    "titulo": titulo,
+                    "conteudo": conteudo,
+                    "origem": origem
+                },
+                on_conflict="account_id,titulo"
             ).execute()
         os.makedirs(self.pasta, exist_ok=True)
         with open(f"{self.pasta}/{titulo}", "w", encoding="utf-8") as f:
@@ -62,7 +110,11 @@ class CerebroBoosterzinho:
     def listar_documentos(self):
         if self.client:
             try:
-                resp = self.client.table("documentos_cerebro").select("titulo, origem").order("titulo").execute()
+                resp = self.client.table("documentos_cerebro") \
+                    .select("titulo, origem") \
+                    .eq("account_id", self.account_id) \
+                    .order("titulo") \
+                    .execute()
                 if resp.data is not None:
                     return resp.data
             except Exception:
@@ -74,7 +126,11 @@ class CerebroBoosterzinho:
     def obter_documento(self, titulo: str) -> str:
         if self.client:
             try:
-                resp = self.client.table("documentos_cerebro").select("conteudo").eq("titulo", titulo).execute()
+                resp = self.client.table("documentos_cerebro") \
+                    .select("conteudo") \
+                    .eq("account_id", self.account_id) \
+                    .eq("titulo", titulo) \
+                    .execute()
                 if resp.data:
                     return resp.data[0]["conteudo"]
             except Exception:
@@ -88,7 +144,11 @@ class CerebroBoosterzinho:
     def remover_documento(self, titulo: str):
         if self.client:
             try:
-                self.client.table("documentos_cerebro").delete().eq("titulo", titulo).execute()
+                self.client.table("documentos_cerebro") \
+                    .delete() \
+                    .eq("account_id", self.account_id) \
+                    .eq("titulo", titulo) \
+                    .execute()
             except Exception:
                 pass
         caminho = f"{self.pasta}/{titulo}"
@@ -96,7 +156,7 @@ class CerebroBoosterzinho:
             os.remove(caminho)
         self.carregar()
 
-    def buscar_contexto(self, pergunta: str, top_k: int = 3) -> str:
+    def buscar_contexto(self, pergunta: str, top_k: int = 4) -> str:
         if not self.blocos:
             return ""
         palavras = set(re.findall(r'\w{3,}', pergunta.lower()))
