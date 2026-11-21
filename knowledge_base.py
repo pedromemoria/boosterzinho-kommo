@@ -92,19 +92,23 @@ class CerebroBoosterzinho:
                     self.blocos.append(f"[{os.path.basename(caminho)}]\n{secao}")
 
     def salvar_documento(self, titulo: str, conteudo: str, origem: str = "manual"):
+        # Remove caracteres nulos (\x00) comuns na extração de PDFs que o PostgreSQL rejeita
+        conteudo_limpo = conteudo.replace("\x00", "")
+        titulo_limpo = titulo.replace("\x00", "")
+
         if self.client:
             self.client.table("documentos_cerebro").upsert(
                 {
                     "account_id": self.account_id,
-                    "titulo": titulo,
-                    "conteudo": conteudo,
+                    "titulo": titulo_limpo,
+                    "conteudo": conteudo_limpo,
                     "origem": origem
                 },
                 on_conflict="account_id,titulo"
             ).execute()
         os.makedirs(self.pasta, exist_ok=True)
-        with open(f"{self.pasta}/{titulo}", "w", encoding="utf-8") as f:
-            f.write(conteudo)
+        with open(f"{self.pasta}/{titulo_limpo}", "w", encoding="utf-8") as f:
+            f.write(conteudo_limpo)
         self.carregar()
 
     def listar_documentos(self):
