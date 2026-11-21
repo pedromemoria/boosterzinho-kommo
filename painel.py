@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import litellm
 import requests
 import streamlit as st
@@ -17,9 +18,7 @@ PROVEDORES_IA = {
     "Gemini (Google)": {
         "modelos": [
             "gemini/gemini-3.8-flash-lite",
-            "gemini/gemini-3.8-flash",
-            "gemini/gemini-2.5-flash",
-            "gemini/gemini-2.0-flash"
+            "gemini/gemini-3.8-flash"
         ],
         "env_var": "GEMINI_API_KEY",
         "placeholder": "AIzaSy..."
@@ -72,7 +71,7 @@ with st.sidebar:
     st.divider()
     st.subheader("🗄️ Banco de Dados (Supabase)")
     sb_url = st.text_input("Supabase URL", value=os.getenv("SUPABASE_URL", ""), placeholder="https://xxxx.supabase.co")
-    sb_key = st.text_input("Supabase Anon Key", value=os.getenv("SUPABASE_KEY", ""), type="password", placeholder="eyJhbGci...")
+    sb_key = st.text_input("Supabase Anon Key", value=os.getenv("SUPABASE_KEY", ""), type="password", placeholder="sb_publishable_...")
     if sb_url:
         os.environ["SUPABASE_URL"] = sb_url
     if sb_key:
@@ -180,19 +179,21 @@ with aba_chat:
                         ultimo_erro = None
                         for ia_atual in ias_prontas:
                             cfg = PROVEDORES_IA[ia_atual]
-                            for mod in cfg["modelos"]:
+                            for idx, mod in enumerate(cfg["modelos"]):
                                 try:
                                     return completion(
                                         model=mod,
                                         messages=mensagens_atuais,
                                         tools=tools,
                                         api_key=chaves_ativas[ia_atual],
-                                        timeout=10,
+                                        timeout=12,
                                         num_retries=0,
                                         reasoning_effort="low"
                                     )
                                 except Exception as err:
                                     ultimo_erro = err
+                                    if idx < len(cfg["modelos"]) - 1:
+                                        time.sleep(1.5)
                                     continue
                         raise ultimo_erro
 
