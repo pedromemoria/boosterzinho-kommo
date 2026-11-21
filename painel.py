@@ -141,4 +141,34 @@ with aba_chat:
         st.subheader("📋 Campos Preenchidos no Kommo (Ao Vivo)")
         st.info("Veja aqui o que o Boosterzinho está preenchendo nos bastidores do CRM:")
         for campo, valor in st.session_state.ficha_crm.items():
-            st.text_input(campo.replace("_
+            rotulo = campo.replace("_", " ")
+            st.text_input(rotulo, value=valor, disabled=True)
+
+        if st.button("🔄 Reiniciar Conversa de Teste"):
+            st.session_state.mensagens_teste = []
+            st.session_state.ficha_crm = {
+                "Nome_Completo": "—",
+                "Especialidade": "—",
+                "Medico_Preferencia": "—",
+                "Valor_Consulta": "—",
+                "Data_Hora_Agendamento": "—",
+                "Status_Funil": "Novo Lead"
+            }
+            st.rerun()
+
+# --- ABA 2: EDITOR DO CÉREBRO ---
+with aba_cerebro:
+    st.subheader("📚 Base de Conhecimento do Boosterzinho")
+    st.write("Edite abaixo as regras, médicos, valores e objeções. O Boosterzinho aprende imediatamente:")
+    caminho_md = "cerebro/01_base_conhecimento.md"
+    conteudo_atual = ""
+    if os.path.exists(caminho_md):
+        with open(caminho_md, "r", encoding="utf-8") as f:
+            conteudo_atual = f.read()
+
+    novo_conteudo = st.text_area("Conteúdo do Cérebro (Markdown)", value=conteudo_atual, height=350)
+    if st.button("💾 Salvar Novo Aprendizado"):
+        os.makedirs("cerebro", exist_ok=True)
+        with open(caminho_md, "w", encoding="utf-8") as f:
+            f.write(novo_conteudo)
+        st.success("Conhecimento atualizado! Teste agora na aba Simulador de Atendimento.")
