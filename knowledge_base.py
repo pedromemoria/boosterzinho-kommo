@@ -3,16 +3,19 @@ import glob
 import numpy as np
 from openai import OpenAI
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
 class CerebroBoosterzinho:
-    def __init__(self, pasta="cerebro"):
+    def __init__(self, pasta="cerebro", api_key=None):
         self.pasta = pasta
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.client = OpenAI(api_key=self.api_key) if self.api_key else None
         self.blocos = []
         self.embeddings = []
-        self.carregar()
+        if self.client:
+            self.carregar()
 
     def carregar(self):
+        if not self.client:
+            return
         arquivos = glob.glob(f"{self.pasta}/**/*.md", recursive=True) + \
                    glob.glob(f"{self.pasta}/**/*.txt", recursive=True)
         
@@ -25,16 +28,16 @@ class CerebroBoosterzinho:
                     self.blocos.append(f"[{os.path.basename(caminho)}]\n{secao}")
 
         if self.blocos:
-            resp = client.embeddings.create(
+            resp = self.client.embeddings.create(
                 model="text-embedding-3-small",
                 input=self.blocos
             )
             self.embeddings = [item.embedding for item in resp.data]
 
     def buscar_contexto(self, pergunta: str, top_k: int = 3) -> str:
-        if not self.blocos:
+        if not self.blocos or not self.client:
             return ""
-        q_emb = client.embeddings.create(
+        q_emb = self.client.embeddings.create(
             model="text-embedding-3-small",
             input=[pergunta]
         ).data[0].embedding
