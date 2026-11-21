@@ -10,8 +10,7 @@ from knowledge_base import CerebroBoosterzinho
 litellm.drop_params = True
 litellm.num_retries = 0
 
-st.set_page_config(page_title="Boosterzinho Multi-Conta", page_icon="🤖", layout="wide")
-st.title("🤖 Boosterzinho — Central Multi-Conta Kommo")
+st.set_page_config(page_title="Boosterzinho — Pastas por Clínica", page_icon="📁", layout="wide")
 
 def obter_modelos_groq_ativos(api_key: str):
     """Consulta diretamente na API do Groq quais modelos de texto estão habilitados para esta chave."""
@@ -30,7 +29,6 @@ def obter_modelos_groq_ativos(api_key: str):
                 f"groq/{m['id']}" for m in dados
                 if m.get("active", True) and not any(x in m["id"].lower() for x in ignorar)
             ]
-            # Prioriza modelos Llama 4 / Llama / Qwen / GPT-OSS mais capazes primeiro
             ativos.sort(key=lambda m: (
                 0 if "70b" in m or "llama-4" in m or "120b" in m else
                 1 if "llama" in m or "qwen" in m or "gpt" in m else 2
@@ -67,6 +65,7 @@ PROVEDORES_IA = {
     }
 }
 
+# --- BARRA LATERAL: NAVEGADOR DE PASTAS DAS CLÍNICAS ---
 with st.sidebar:
     st.subheader("🗄️ Banco de Dados (Supabase)")
     sb_url = st.text_input("Supabase URL", value=os.getenv("SUPABASE_URL", ""), placeholder="https://xxxx.supabase.co").strip()
@@ -83,21 +82,31 @@ with st.sidebar:
         st.warning("🟡 Cole URL e Key do Supabase acima")
 
     st.divider()
-    st.subheader("🏢 Conta Kommo Ativa")
+    st.subheader("📁 Pastas das Clínicas")
 
     contas = cerebro_base.listar_contas()
-    mapa_contas = {f"{c['nome_empresa']} ({c['account_id']})": c["account_id"] for c in contas}
-    opcoes_select = list(mapa_contas.keys()) + ["➕ Cadastrar Nova Conta..."]
+    ids_disponiveis = [c["account_id"] for c in contas]
 
-    escolha_conta = st.selectbox("Selecione a Empresa / Clínica:", opcoes_select)
+    if "pasta_clinica_ativa" not in st.session_state or st.session_state.pasta_clinica_ativa not in ids_disponiveis:
+        st.session_state.pasta_clinica_ativa = ids_disponiveis[0]
 
-    if escolha_conta == "➕ Cadastrar Nova Conta...":
-        with st.form("form_nova_conta"):
-            novo_id = st.text_input("ID Único (sem espaços)", placeholder="ex: clinica_sorriso")
-            novo_nome = st.text_input("Nome da Empresa", placeholder="ex: Clínica Sorriso")
-            novo_sub = st.text_input("Subdomínio Kommo", placeholder="ex: clinicasorriso")
+    # Lista visual estilo gerenciador de pastas
+    for c in contas:
+        cid = c["account_id"]
+        esta_aberta = (cid == st.session_state.pasta_clinica_ativa)
+        icone = "📂" if esta_aberta else "📁"
+        tipo_botao = "primary" if esta_aberta else "secondary"
+        if st.button(f"{icone} {c['nome_empresa']}", key=f"nav_pasta_{cid}", use_container_width=True, type=tipo_botao):
+            st.session_state.pasta_clinica_ativa = cid
+            st.rerun()
+
+    with st.expander("➕ Nova Pasta de Clínica"):
+        with st.form("form_nova_pasta_clinica"):
+            novo_id = st.text_input("ID da Pasta (sem espaços)", placeholder="ex: clinica_prime")
+            novo_nome = st.text_input("Nome da Clínica", placeholder="ex: Clínica Prime")
+            novo_sub = st.text_input("Subdomínio Kommo", placeholder="ex: clinicaprime")
             novo_tok = st.text_input("Token Kommo", type="password")
-            if st.form_submit_button("💾 Criar Conta"):
+            if st.form_submit_button("📁 Criar Pasta"):
                 if novo_id and novo_nome:
                     id_limpo = novo_id.strip().lower().replace(" ", "_")
                     cerebro_base.salvar_conta({
@@ -105,17 +114,16 @@ with st.sidebar:
                         "nome_empresa": novo_nome.strip(),
                         "kommo_subdominio": novo_sub.strip(),
                         "kommo_token": novo_tok.strip(),
-                        "prompt_persona": "Você é um consultor comercial especialista em atendimento pelo WhatsApp. Conduza o lead do primeiro contato até o fechamento usando SPIN Selling com empatia, firmeza e quebra de objeções.",
+                        "prompt_persona": "Você é um consultor comercial especialista em atendimento pelo WhatsApp da clínica. Conduza o lead do primeiro contato até o agendamento usando SPIN Selling com empatia, firmeza e quebra de objeções.",
                         "etapa_convertido_id": ""
                     })
-                    st.success(f"Conta `{novo_nome}` criada!")
+                    st.session_state.pasta_clinica_ativa = id_limpo
+                    st.success(f"Pasta `{novo_nome}` criada!")
                     st.rerun()
                 else:
-                    st.error("Preencha o ID e o Nome da Empresa.")
-        conta_ativa_id = "padrao"
-    else:
-        conta_ativa_id = mapa_contas[escolha_conta]
+                    st.error("Preencha o ID e o Nome da Clínica.")
 
+    conta_ativa_id = st.session_state.pasta_clinica_ativa
     cerebro = CerebroBoosterzinho(account_id=conta_ativa_id, supabase_url=sb_url, supabase_key=sb_key)
     dados_conta = cerebro.obter_conta(conta_ativa_id)
 
@@ -153,13 +161,145 @@ with st.sidebar:
             os.environ[cfg["env_var"]] = chave
             chaves_ativas[ia_nome] = chave
 
-aba_chat, aba_cerebro, aba_config = st.tabs([
-    "💬 Simulador de Conversão",
-    "🧠 Cérebro & Objeções da Conta",
-    "⚙️ Configurações Kommo da Conta"
+# --- CABEÇALHO DA PASTA ABERTA ---
+docs_conta_atual = cerebro.listar_documentos()
+sub_kommo_txt = dados_conta.get("kommo_subdominio") or "Não vinculado"
+
+col_top1, col_top2 = st.columns([3, 1])
+with col_top1:
+    st.title(f"📂 {dados_conta['nome_empresa']}")
+    st.caption(f"Pasta: `/{conta_ativa_id}`  •  Subdomínio Kommo: `{sub_kommo_txt}`  •  📄 **{len(docs_conta_atual)} arquivo(s)** nesta pasta")
+with col_top2:
+    st.metric("Total de Clínicas", len(contas))
+
+aba_pastas, aba_arquivos, aba_chat, aba_config = st.tabs([
+    "🗂️ Todas as Pastas",
+    "📄 Arquivos & Objeções da Pasta",
+    "💬 Simulador de Atendimento",
+    "⚙️ Configurações Kommo"
 ])
 
-# --- ABA 1: SIMULADOR DE ATENDIMENTO DO INÍCIO À CONVERSÃO ---
+# --- ABA 1: VISÃO ESTILO EXPLORER DE TODAS AS PASTAS DE CLÍNICAS ---
+with aba_pastas:
+    st.subheader("🗂️ Diretório de Clínicas Cadastradas")
+    st.caption("Cada clínica possui uma pasta isolada com seus próprios preços, PDFs, sites, quebra de objeções e credenciais Kommo.")
+
+    cols_grid = st.columns(3)
+    for idx, c in enumerate(contas):
+        cid = c["account_id"]
+        c_cerebro = CerebroBoosterzinho(account_id=cid, supabase_url=sb_url, supabase_key=sb_key)
+        qtd_docs = len(c_cerebro.listar_documentos())
+        aberta = (cid == conta_ativa_id)
+
+        with cols_grid[idx % 3]:
+            with st.container(border=True):
+                st.markdown(f"### {'📂' if aberta else '📁'} {c['nome_empresa']}")
+                st.caption(f"ID: `{cid}`")
+                st.write(f"📄 **{qtd_docs}** arquivo(s) na pasta")
+                st.write(f"🔗 Kommo: `{c.get('kommo_subdominio') or 'Pendente'}`")
+                if aberta:
+                    st.button("✅ Pasta Aberta", key=f"card_open_{cid}", disabled=True, use_container_width=True)
+                else:
+                    if st.button("📂 Abrir Pasta", key=f"card_open_{cid}", use_container_width=True):
+                        st.session_state.pasta_clinica_ativa = cid
+                        st.rerun()
+
+# --- ABA 2: CONTEÚDO DENTRO DA PASTA DA CLÍNICA ---
+with aba_arquivos:
+    st.subheader(f"📂 Conteúdo da Pasta: {dados_conta['nome_empresa']}")
+
+    col_ed, col_lista = st.columns([1.6, 1])
+
+    with col_ed:
+        modo_edicao = st.radio(
+            "Adicionar ou editar conteúdo nesta pasta:",
+            [
+                "💎 1. Oferta, Preços & Regras",
+                "🛡️ 2. Quebra de Objeções",
+                "🌐 3. Importar Site / Artigo",
+                "📄 4. Enviar PDF / TXT"
+            ],
+            horizontal=True
+        )
+
+        if modo_edicao == "💎 1. Oferta, Preços & Regras":
+            txt_oferta = cerebro.obter_documento("01_oferta_e_regras.md")
+            novo_oferta = st.text_area(
+                "Procedimentos, valores, formas de pagamento, diferenciais e critério de conversão:",
+                value=txt_oferta,
+                height=300,
+                placeholder="Ex: Avaliação odontológica + limpeza por R$ 250. Implantes a partir de 12x. Objetivo: agendar avaliação presencial."
+            )
+            if st.button("💾 Salvar na Pasta"):
+                cerebro.salvar_documento("01_oferta_e_regras.md", novo_oferta, origem="oferta")
+                st.success("Salvo na pasta da clínica!")
+                st.rerun()
+
+        elif modo_edicao == "🛡️ 2. Quebra de Objeções":
+            txt_obj = cerebro.obter_documento("02_quebra_objecoes.md")
+            novo_obj = st.text_area(
+                "Objeções frequentes desta clínica e respostas para o robô contornar:",
+                value=txt_obj,
+                height=300,
+                placeholder="OBJEÇÃO: 'Achei caro'\nRESPOSTA: Valide o cuidado com a saúde, explique o parcelamento e os diferenciais da clínica, e sugira 2 horários para avaliação.\n\nOBJEÇÃO: 'Vou ver minha agenda / falar com meu marido'\nRESPOSTA: Concorde e ofereça deixar um horário pré-reservado sem compromisso."
+            )
+            if st.button("💾 Salvar Objeções na Pasta"):
+                cerebro.salvar_documento("02_quebra_objecoes.md", novo_obj, origem="objecoes")
+                st.success("Matriz de objeções salva na pasta!")
+                st.rerun()
+
+        elif modo_edicao == "🌐 3. Importar Site / Artigo":
+            url_artigo = st.text_input("Link do site ou página da clínica:", placeholder="https://...")
+            nome_url = st.text_input("Nome do arquivo na pasta:", placeholder="ex: site_clinica")
+            if st.button("📥 Extrair para esta Pasta"):
+                if url_artigo and nome_url:
+                    try:
+                        resp = requests.get(f"https://r.jina.ai/{url_artigo}", timeout=20)
+                        texto_limpo = resp.text.strip() if resp.status_code == 200 else ""
+                        if len(texto_limpo) < 100:
+                            from bs4 import BeautifulSoup
+                            r_html = requests.get(url_artigo, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+                            soup = BeautifulSoup(r_html.text, "html.parser")
+                            for tag in soup(["script", "style", "nav", "footer", "header"]):
+                                tag.decompose()
+                            texto_limpo = "\n".join([l.strip() for l in soup.get_text().splitlines() if l.strip()])
+                        nome_limpo = nome_url.strip().replace(" ", "_") + ".md"
+                        cerebro.salvar_documento(nome_limpo, f"## Fonte: {url_artigo}\n\n{texto_limpo}", origem="url")
+                        st.success(f"`{nome_limpo}` salvo na pasta `{dados_conta['nome_empresa']}`!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao ler site: {e}")
+
+        else:
+            arq_up = st.file_uploader("Enviar PDF ou TXT para esta pasta:", type=["pdf", "txt", "md"])
+            if arq_up and st.button("📥 Salvar PDF/TXT na Pasta"):
+                texto_ext = ""
+                if arq_up.name.endswith(".pdf"):
+                    from pypdf import PdfReader
+                    leitor = PdfReader(arq_up)
+                    for pag in leitor.pages:
+                        texto_ext += (pag.extract_text() or "") + "\n\n"
+                else:
+                    texto_ext = arq_up.read().decode("utf-8", errors="ignore")
+                nome_salvo = arq_up.name.rsplit(".", 1)[0].replace(" ", "_") + ".md"
+                cerebro.salvar_documento(nome_salvo, f"## Documento: {arq_up.name}\n\n{texto_ext}", origem="arquivo")
+                st.success(f"`{arq_up.name}` salvo na pasta!")
+                st.rerun()
+
+    with col_lista:
+        st.subheader(f"🗂️ Arquivos em `/{conta_ativa_id}`")
+        if not docs_conta_atual:
+            st.info("Esta pasta ainda está vazia. Adicione os materiais ao lado.")
+        else:
+            for d in docs_conta_atual:
+                tit = d["titulo"]
+                c1, c2 = st.columns([4, 1])
+                c1.write(f"📄 `{tit}`")
+                if c2.button("🗑️", key=f"del_{conta_ativa_id}_{tit}"):
+                    cerebro.remover_documento(tit)
+                    st.rerun()
+
+# --- ABA 3: SIMULADOR DE ATENDIMENTO DA CLÍNICA ---
 with aba_chat:
     col_chat, col_crm = st.columns([1.4, 1])
 
@@ -178,14 +318,13 @@ with aba_chat:
 
     with col_chat:
         st.subheader(f"WhatsApp Simulado — {dados_conta['nome_empresa']}")
-        docs_conta_atual = cerebro.listar_documentos()
-        st.caption(f"📚 Base ativa nesta conta: **{len(docs_conta_atual)} arquivo(s)/site(s)** conectados ao motor.")
+        st.caption(f"📂 Lendo exclusivamente da pasta `/{conta_ativa_id}` (**{len(docs_conta_atual)} arquivo(s)**).")
 
         for msg in st.session_state.mensagens_teste:
             with st.chat_message(msg["role"]):
                 st.write(msg["content"])
 
-        prompt_usuario = st.chat_input("Simule um lead chegando do Kommo...")
+        prompt_usuario = st.chat_input("Simule um paciente/lead mandando mensagem...")
 
         if prompt_usuario:
             ias_prontas = [ia for ia in ias_selecionadas if ia in chaves_ativas]
@@ -196,7 +335,7 @@ with aba_chat:
                 with st.chat_message("user"):
                     st.write(prompt_usuario)
 
-                with st.spinner("Consultando PDFs/sites e respondendo..."):
+                with st.spinner("Consultando pasta da clínica e respondendo..."):
                     contexto_dinamico = cerebro.buscar_contexto(prompt_usuario, top_k=3)[:2500]
                     regras_fixas = cerebro.obter_documento("01_oferta_e_regras.md")[:2000]
                     matriz_objecoes = cerebro.obter_documento("02_quebra_objecoes.md")[:2000]
@@ -207,7 +346,7 @@ with aba_chat:
                             "type": "function",
                             "function": {
                                 "name": "consultar_base_conhecimento",
-                                "description": "Pesquisa informações detalhadas nos PDFs, sites salvos, técnicas de SPIN Selling, valores e regras desta conta.",
+                                "description": "Pesquisa informações detalhadas nos PDFs, sites salvos, técnicas de SPIN Selling, valores e regras da pasta desta clínica.",
                                 "parameters": {
                                     "type": "object",
                                     "properties": {
@@ -246,19 +385,19 @@ with aba_chat:
 
                     SUA MISSÃO NO WHATSAPP:
                     1. Conduzir o lead desde o primeiro 'oi' até a CONVERSÃO (agendamento, fechamento ou pagamento).
-                    2. Aplicar metodologia consultiva (SPIN Selling) e consultar seus PDFs/sites salvos (`consultar_base_conhecimento`) sempre que precisar de argumentos, detalhes técnicos ou scripts.
+                    2. Aplicar metodologia consultiva (SPIN Selling) e consultar os arquivos da pasta desta clínica (`consultar_base_conhecimento`) sempre que precisar de argumentos, detalhes técnicos ou scripts.
                     3. Fazer 1 pergunta curta e estratégica por vez (estilo WhatsApp, máximo 2 a 3 frases).
                     4. Descobrir a dor/necessidade antes de apenas jogar preço.
                     5. QUEBRA DE OBJEÇÕES: Sempre que o lead hesitar (ex: 'tá caro', 'vou pensar', 'vou falar com meu marido/sócio', 'depois eu vejo'), acolha em 1 frase curta, use os argumentos da MATRIZ DE OBJEÇÕES e dos PDFs abaixo para reverter e finalize com uma pergunta de avanço/fechamento.
                     6. Sempre que identificar dados do lead, uma objeção ou o fechamento, chame `atualizar_lead_kommo`.
 
-                    === OFERTA, PREÇOS E REGRAS DA CONTA ===
+                    === OFERTA, PREÇOS E REGRAS DA CLÍNICA ===
                     {regras_fixas}
 
-                    === MATRIZ DE QUEBRA DE OBJEÇÕES DA CONTA ===
+                    === MATRIZ DE QUEBRA DE OBJEÇÕES DA CLÍNICA ===
                     {matriz_objecoes}
 
-                    === TRECHOS EXTRAÍDOS DOS PDFs E SITES DESTA CONTA ===
+                    === TRECHOS EXTRAÍDOS DOS PDFs E SITES DESTA PASTA ===
                     {contexto_dinamico}
                     """
 
@@ -337,7 +476,7 @@ with aba_chat:
             st.text_input(campo.replace("_", " "), value=valor, disabled=True)
 
         if st.session_state.ultimas_fontes:
-            with st.expander("🔍 Trechos de PDFs/Sites lidos na última resposta"):
+            with st.expander("🔍 Trechos da pasta lidos na última resposta"):
                 st.caption(st.session_state.ultimas_fontes[:1500])
 
         if st.button("🔄 Novo Lead de Teste"):
@@ -352,115 +491,20 @@ with aba_chat:
             }
             st.rerun()
 
-# --- ABA 2: CÉREBRO & QUEBRA DE OBJEÇÕES ISOLADOS POR CONTA ---
-with aba_cerebro:
-    st.subheader(f"🧠 Cérebro Exclusivo: {dados_conta['nome_empresa']}")
-    st.caption(f"ID da Conta: `{conta_ativa_id}` — Tudo salvo aqui só é usado nos leads desta conta.")
-
-    col_ed, col_lista = st.columns([1.6, 1])
-
-    with col_ed:
-        modo_edicao = st.radio(
-            "O que deseja configurar para esta conta?",
-            [
-                "💎 1. Oferta, Preços & Regras",
-                "🛡️ 2. Quebra de Objeções",
-                "🌐 3. Importar Site / Artigo",
-                "📄 4. Enviar PDF / TXT"
-            ],
-            horizontal=True
-        )
-
-        if modo_edicao == "💎 1. Oferta, Preços & Regras":
-            txt_oferta = cerebro.obter_documento("01_oferta_e_regras.md")
-            novo_oferta = st.text_area(
-                "Descreva produtos/serviços, valores, formas de pagamento, diferenciais e critério de conversão:",
-                value=txt_oferta,
-                height=300,
-                placeholder="Ex: Tratamento X custa R$ 1.200 em até 10x. Inclui avaliação + 3 sessões. Objetivo: agendar avaliação presencial."
-            )
-            if st.button("💾 Salvar Oferta & Regras"):
-                cerebro.salvar_documento("01_oferta_e_regras.md", novo_oferta, origem="oferta")
-                st.success("Oferta e regras salvas para esta conta!")
-
-        elif modo_edicao == "🛡️ 2. Quebra de Objeções":
-            txt_obj = cerebro.obter_documento("02_quebra_objecoes.md")
-            novo_obj = st.text_area(
-                "Liste as objeções comuns desta conta e como o robô deve contornar cada uma:",
-                value=txt_obj,
-                height=300,
-                placeholder="OBJEÇÃO: 'Achei caro'\nRESPOSTA: Valide o cuidado com o investimento, destaque o parcelamento em 10x e o resultado duradouro, e pergunte qual dia fica melhor para iniciar.\n\nOBJEÇÃO: 'Vou pensar / falar com marido'\nRESPOSTA: Concorde que é uma decisão importante, mas lembre que a agenda da semana fecha hoje e ofereça deixar um horário pré-reservado sem compromisso."
-            )
-            if st.button("💾 Salvar Matriz de Objeções"):
-                cerebro.salvar_documento("02_quebra_objecoes.md", novo_obj, origem="objecoes")
-                st.success("Matriz de quebra de objeções salva!")
-
-        elif modo_edicao == "🌐 3. Importar Site / Artigo":
-            url_artigo = st.text_input("Link do site ou página de vendas:", placeholder="https://...")
-            nome_url = st.text_input("Nome do material:", placeholder="ex: pagina_procedimento")
-            if st.button("📥 Extrair e Salvar na Conta"):
-                if url_artigo and nome_url:
-                    try:
-                        resp = requests.get(f"https://r.jina.ai/{url_artigo}", timeout=20)
-                        texto_limpo = resp.text.strip() if resp.status_code == 200 else ""
-                        if len(texto_limpo) < 100:
-                            from bs4 import BeautifulSoup
-                            r_html = requests.get(url_artigo, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-                            soup = BeautifulSoup(r_html.text, "html.parser")
-                            for tag in soup(["script", "style", "nav", "footer", "header"]):
-                                tag.decompose()
-                            texto_limpo = "\n".join([l.strip() for l in soup.get_text().splitlines() if l.strip()])
-                        nome_limpo = nome_url.strip().replace(" ", "_") + ".md"
-                        cerebro.salvar_documento(nome_limpo, f"## Fonte: {url_artigo}\n\n{texto_limpo}", origem="url")
-                        st.success(f"Salvo como `{nome_limpo}` na conta `{dados_conta['nome_empresa']}`!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Erro ao ler site: {e}")
-
-        else:
-            arq_up = st.file_uploader("Enviar PDF ou TXT desta conta:", type=["pdf", "txt", "md"])
-            if arq_up and st.button("📥 Processar e Salvar na Conta"):
-                texto_ext = ""
-                if arq_up.name.endswith(".pdf"):
-                    from pypdf import PdfReader
-                    leitor = PdfReader(arq_up)
-                    for pag in leitor.pages:
-                        texto_ext += (pag.extract_text() or "") + "\n\n"
-                else:
-                    texto_ext = arq_up.read().decode("utf-8", errors="ignore")
-                nome_salvo = arq_up.name.rsplit(".", 1)[0].replace(" ", "_") + ".md"
-                cerebro.salvar_documento(nome_salvo, f"## Documento: {arq_up.name}\n\n{texto_ext}", origem="arquivo")
-                st.success(f"`{arq_up.name}` adicionado à conta!")
-                st.rerun()
-
-    with col_lista:
-        st.subheader("🗂️ Arquivos desta Conta")
-        docs = cerebro.listar_documentos()
-        if not docs:
-            st.info("Nenhum conhecimento cadastrado para esta conta ainda.")
-        else:
-            for d in docs:
-                tit = d["titulo"]
-                c1, c2 = st.columns([4, 1])
-                c1.write(f"📄 `{tit}`")
-                if c2.button("🗑️", key=f"del_{conta_ativa_id}_{tit}"):
-                    cerebro.remover_documento(tit)
-                    st.rerun()
-
-# --- ABA 3: CONFIGURAÇÕES DO KOMMO DA CONTA ---
+# --- ABA 4: CONFIGURAÇÕES DO KOMMO DA CLÍNICA ---
 with aba_config:
-    st.subheader(f"⚙️ Credenciais e Persona — {dados_conta['nome_empresa']}")
+    st.subheader(f"⚙️ Credenciais Kommo e Persona — {dados_conta['nome_empresa']}")
     with st.form("form_editar_conta"):
-        ed_nome = st.text_input("Nome da Empresa", value=dados_conta.get("nome_empresa", ""))
-        ed_sub = st.text_input("Subdomínio Kommo (ex: minhaempresa)", value=dados_conta.get("kommo_subdominio", ""))
+        ed_nome = st.text_input("Nome da Clínica", value=dados_conta.get("nome_empresa", ""))
+        ed_sub = st.text_input("Subdomínio Kommo (ex: minhaclinica)", value=dados_conta.get("kommo_subdominio", ""))
         ed_tok = st.text_input("Token de Integração Kommo", value=dados_conta.get("kommo_token", ""), type="password")
         ed_etapa = st.text_input("ID da Etapa 'Convertido' no Funil Kommo (opcional)", value=dados_conta.get("etapa_convertido_id", ""))
         ed_persona = st.text_area(
-            "Personalidade e Tom de Voz do Robô nesta conta:",
-            value=dados_conta.get("prompt_persona", "Você é um consultor comercial especialista em atendimento pelo WhatsApp. Conduza o lead do primeiro contato até o fechamento usando SPIN Selling com empatia, firmeza e quebra de objeções."),
+            "Personalidade e Tom de Voz do Robô nesta clínica:",
+            value=dados_conta.get("prompt_persona", "Você é um consultor comercial especialista em atendimento pelo WhatsApp da clínica. Conduza o lead do primeiro contato até o agendamento usando SPIN Selling com empatia, firmeza e quebra de objeções."),
             height=140
         )
-        if st.form_submit_button("💾 Salvar Configurações da Conta"):
+        if st.form_submit_button("💾 Salvar Configurações da Clínica"):
             cerebro.salvar_conta({
                 "account_id": conta_ativa_id,
                 "nome_empresa": ed_nome.strip(),
@@ -469,5 +513,5 @@ with aba_config:
                 "etapa_convertido_id": ed_etapa.strip(),
                 "prompt_persona": ed_persona.strip()
             })
-            st.success("Configurações da conta atualizadas no Supabase!")
+            st.success("Configurações da clínica atualizadas no Supabase!")
             st.rerun()
