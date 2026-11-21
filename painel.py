@@ -1,7 +1,7 @@
 import os
 import json
 import streamlit as st
-from openai import OpenAI
+from litellm import completion
 from knowledge_base import CerebroBoosterzinho
 from erp_client import consultar_valores_e_agenda
 
@@ -9,12 +9,53 @@ st.set_page_config(page_title="Boosterzinho", page_icon="🤖", layout="wide")
 
 st.title("🤖 Boosterzinho")
 
-# Barra lateral para configurações e chave API
+# Mapa dos provedores e modelos suportados
+PROVEDORES_IA = {
+    "ChatGPT (OpenAI)": {
+        "modelo": "gpt-4o-mini",
+        "env_var": "OPENAI_API_KEY",
+        "placeholder": "sk-proj-..."
+    },
+    "Gemini (Google)": {
+        "modelo": "gemini/gemini-2.5-flash",
+        "env_var": "GEMINI_API_KEY",
+        "placeholder": "AIzaSy..."
+    },
+    "Claude (Anthropic)": {
+        "modelo": "anthropic/claude-3-5-haiku-20241022",
+        "env_var": "ANTHROPIC_API_KEY",
+        "placeholder": "sk-ant-..."
+    }
+}
+
+# Barra lateral para configurações e chaves API
 with st.sidebar:
-    st.header("⚙️ Configurações")
-    api_key = st.text_input("OpenAI API Key", value=os.getenv("OPENAI_API_KEY", ""), type="password")
-    if api_key:
-        os.environ["OPENAI_API_KEY"] = api_key
+    ias_selecionadas = st.multiselect(
+        "Motor de Inteligência",
+        options=list(PROVEDORES_IA.keys()),
+        default=["ChatGPT (OpenAI)"],
+        placeholder="Selecione uma ou mais IAs..."
+    )
+
+    chaves_ativas = {}
+    if ias_selecionadas:
+        for ia_nome in ias_selecionadas:
+            cfg = PROVEDORES_IA[ia_nome]
+            chave = st.text_input(
+                f"API Key — {ia_nome}",
+                value=os.getenv(cfg["env_var"], ""),
+                type="password",
+                placeholder=cfg["placeholder"],
+                key=f"key_{cfg['env_var']}"
+            )
+            if chave:
+                os.environ[cfg["env_var"]] = chave
+                chaves_ativas[ia_nome] = chave
+
+        if len(ias_selecionadas) > 1:
+            st.caption(f"⚡ Principal: **{ias_selecionadas[0]}** (as demais entram como reserva automática se falhar).")
+    else:
+        st.warning("Selecione pelo menos uma IA no Motor de Inteligência.")
 
     st.divider()
     st.subheader("🏥 Dados da Clínica (Kommo)")
@@ -42,7 +83,9 @@ with aba_chat:
         }
 
     with col_chat:
-        st.subheader("WhatsApp Simulado")
+        titulo_chat = f"WhatsApp Simulado ({' + '.join([ia.split()[0] for ia in ias_selecionadas])})" if ias_selecionadas else "WhatsApp Simulado"
+        st.subheader(titulo_chat)
+
         for msg in st.session_state.mensagens_teste:
             with st.chat_message(msg["role"]):
                 st.write(msg["content"])
@@ -50,15 +93,15 @@ with aba_chat:
         prompt_usuario = st.chat_input("Digite como se fosse um paciente no WhatsApp...")
 
         if prompt_usuario:
-            if not api_key:
-                st.error("Insira sua OpenAI API Key na barra lateral esquerda para conversar.")
+            ias_prontas = [ia for ia in ias_selecionadas if ia in chaves_ativas]
+            if not ias_prontas:
+                st.error("Selecione uma IA no Motor de Inteligência e preencha a respectiva API Key na barra lateral.")
             else:
                 st.session_state.mensagens_teste.append({"role": "user", "content": prompt_usuario})
                 with st.chat_message("user"):
                     st.write(prompt_usuario)
 
-                client = OpenAI(api_key=api_key)
-                cerebro = CerebroBoosterzinho(api_key=api_key)
+                cerebro = CerebroBoosterzinho()
                 contexto = cerebro.buscar_contexto(prompt_usuario)
 
                 tools = [
@@ -108,14 +151,161 @@ with aba_chat:
                 {contexto}
                 """
 
+                def executar_ia_com_fallback(mensagens_atuais):
+                    ultimo_erro = None
+                    for ia_atual in ias_prontas:
+                        cfg = PROVEDORES_IA[ia_atual]
+                        try:
+                            return completion(
+                                model=cfg["modelo"],
+                                messages=mensagens_atuais,
+                                tools=tools,
+                                temperature=0.4,
+                                api_key=chaves_ativas[ia_atual]
+                            )
+                        except Exception as err:
+                            ultimo_erro = err
+                            continue
+                    raise ultimo_erro
+
                 msgs = [{"role": "system", "content": sys_prompt}] + st.session_state.mensagens_teste
 
-                resp = client.chat.completions.create(model="gpt-4o-mini", messages=msgs, tools=tools, temperature=0.4)
-                msg_ia = resp.choices[0].message
+                try:
+                    resp = executar_ia_com_fallback(msgs)
+                    msg_ia = resp.choices[0].message
 
-                while msg_ia.tool_calls:
-                    msgs.append(msg_ia)
-                    for tc in msg_ia.tool_calls:
-                        args = json.loads(tc.function.arguments)
-                        if tc.function.name == "consultar_erp":
-                            res = consultar
+                    while getattr(msg_ia, "tool_calls", None):
+                        msgs.append(msg_ia.model_dump(exclude_none=True))
+                        for tc in msg_ia.tool_calls:
+                            args = json.loads(tc.function.arguments)
+                            if tc.function.name == "consultar_erp":
+                                res = consultar_valores_e_agenda(args.get("especialidade", ""), args.get("medico_preferencia"))
+                            elif tc.function.name == "preencher_crm":
+                                for k, v in args.items():
+                                    if k == "Agendado" and v:
+                                        st.session_state.ficha_crm["Status_Funil"] = "✅ Consulta Agendada"
+                                    elif v and k in st.session_state.ficha_crm:
+                                        st.session_state.ficha_crm[k] = str(v)
+                                res = {"status": "ok"}
+                            msgs.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "name": tc.function.name,
+                                "content": json.dumps(res, ensure_ascii=False)
+                            })
+
+                        resp = executar_ia_com_fallback(msgs)
+                        msg_ia = resp.choices[0].message
+
+                    resposta_final = msg_ia.content
+                    st.session_state.mensagens_teste.append({"role": "assistant", "content": resposta_final})
+                    with st.chat_message("assistant"):
+                        st.write(resposta_final)
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"Erro ao comunicar com o Motor de Inteligência: {e}")
+
+    with col_crm:
+        st.subheader("📋 Campos Preenchidos no Kommo (Ao Vivo)")
+        st.info("Veja aqui o que o Boosterzinho está preenchendo nos bastidores do CRM:")
+        for campo, valor in st.session_state.ficha_crm.items():
+            rotulo = campo.replace("_", " ")
+            st.text_input(rotulo, value=valor, disabled=True)
+
+        if st.button("🔄 Reiniciar Conversa de Teste"):
+            st.session_state.mensagens_teste = []
+            st.session_state.ficha_crm = {
+                "Nome_Completo": "—",
+                "Especialidade": "—",
+                "Medico_Preferencia": "—",
+                "Valor_Consulta": "—",
+                "Data_Hora_Agendamento": "—",
+                "Status_Funil": "Novo Lead"
+            }
+            st.rerun()
+
+# --- ABA 2: EDITOR DO CÉREBRO (MULTI-FONTES) ---
+with aba_cerebro:
+    st.subheader("📚 Central de Aprendizado do Boosterzinho")
+    st.write("Adicione sites, artigos, PDFs ou edite as regras manuais. Tudo fica salvo na memória dele.")
+
+    col_fontes, col_arquivos = st.columns([1.5, 1])
+
+    with col_fontes:
+        tipo_fonte = st.radio(
+            "Como deseja ensinar o Boosterzinho?",
+            ["🌐 Importar de Site / Artigo (URL)", "📄 Enviar PDF ou TXT", "✍️ Editar Base Manual"],
+            horizontal=True
+        )
+
+        os.makedirs("cerebro", exist_ok=True)
+
+        if tipo_fonte == "🌐 Importar de Site / Artigo (URL)":
+            url_artigo = st.text_input("Cole o link do site ou artigo:", placeholder="https://exemplo.com.br/artigo-sobre-tratamento")
+            nome_arquivo_url = st.text_input("Nome para salvar esse conhecimento:", placeholder="ex: artigo_dermatologia")
+            if st.button("📥 Extrair e Aprender Conteúdo do Site"):
+                if url_artigo and nome_arquivo_url:
+                    try:
+                        import requests
+                        from bs4 import BeautifulSoup
+                        resp = requests.get(url_artigo, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+                        soup = BeautifulSoup(resp.text, "html.parser")
+                        for tag in soup(["script", "style", "nav", "footer", "header"]):
+                            tag.decompose()
+                        texto_limpo = "\n".join([linha.strip() for linha in soup.get_text().splitlines() if linha.strip()])
+                        
+                        nome_limpo = nome_arquivo_url.strip().replace(" ", "_") + ".md"
+                        with open(f"cerebro/{nome_limpo}", "w", encoding="utf-8") as f:
+                            f.write(f"## Fonte: {url_artigo}\n\n{texto_limpo}")
+                        st.success(f"Site aprendido com sucesso e salvo em `cerebro/{nome_limpo}`!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Não foi possível ler o site: {e}")
+                else:
+                    st.warning("Preencha o link e o nome para salvar.")
+
+        elif tipo_fonte == "📄 Enviar PDF ou TXT":
+            arquivo_subido = st.file_uploader("Escolha um arquivo PDF ou TXT", type=["pdf", "txt", "md"])
+            if arquivo_subido and st.button("📥 Processar e Aprender Arquivo"):
+                texto_extraido = ""
+                if arquivo_subido.name.endswith(".pdf"):
+                    from pypdf import PdfReader
+                    leitor = PdfReader(arquivo_subido)
+                    for pagina in leitor.pages:
+                        texto_extraido += (pagina.extract_text() or "") + "\n\n"
+                else:
+                    texto_extraido = arquivo_subido.read().decode("utf-8", errors="ignore")
+
+                nome_salvo = arquivo_subido.name.rsplit(".", 1)[0].replace(" ", "_") + ".md"
+                with open(f"cerebro/{nome_salvo}", "w", encoding="utf-8") as f:
+                    f.write(f"## Documento: {arquivo_subido.name}\n\n{texto_extraido}")
+                st.success(f"Documento `{arquivo_subido.name}` absorvido pelo Boosterzinho!")
+                st.rerun()
+
+        else:
+            caminho_md = "cerebro/01_base_conhecimento.md"
+            conteudo_atual = ""
+            if os.path.exists(caminho_md):
+                with open(caminho_md, "r", encoding="utf-8") as f:
+                    conteudo_atual = f.read()
+
+            novo_conteudo = st.text_area("Regras, Médicos, Valores e Objeções:", value=conteudo_atual, height=320)
+            if st.button("💾 Salvar Regras Manuais"):
+                with open(caminho_md, "w", encoding="utf-8") as f:
+                    f.write(novo_conteudo)
+                st.success("Regras atualizadas!")
+
+    with col_arquivos:
+        st.subheader("🗂️ Arquivos na Memória")
+        arquivos_ativos = os.listdir("cerebro") if os.path.exists("cerebro") else []
+        if not arquivos_ativos:
+            st.info("Nenhum arquivo na memória ainda.")
+        else:
+            for arq in sorted(arquivos_ativos):
+                col_a, col_b = st.columns([4, 1])
+                col_a.write(f"📄 `{arq}`")
+                if arq != "01_base_conhecimento.md":
+                    if col_b.button("🗑️", key=f"del_{arq}", help="Remover arquivo"):
+                        os.remove(f"cerebro/{arq}")
+                        st.rerun()
