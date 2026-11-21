@@ -1,34 +1,38 @@
 import os
 import glob
+import json
 import re
 
 class CerebroBoosterzinho:
     def __init__(self, account_id="padrao", pasta="cerebro", supabase_url=None, supabase_key=None):
         self.account_id = account_id.strip() or "padrao"
+        self.pasta_raiz = pasta
         self.pasta = os.path.join(pasta, self.account_id)
-        self.supabase_url = supabase_url or os.getenv("SUPABASE_URL", "")
-        self.supabase_key = supabase_key or os.getenv("SUPABASE_KEY", "")
+        self.arquivo_contas_local = os.path.join(pasta, "_contas_locais.json")
+        self.supabase_url = (supabase_url or os.getenv("SUPABASE_URL", "")).strip()
+        self.supabase_key = (supabase_key or os.getenv("SUPABASE_KEY", "")).strip()
         self.client = None
         self.blocos = []
         self.usando_nuvem = False
 
-        if self.supabase_url and self.supabase_key:
+        if self.supabase_url and self.supabase_key and self.supabase_url.startswith("http"):
             try:
                 from supabase import create_client
                 self.client = create_client(self.supabase_url, self.supabase_key)
                 self.usando_nuvem = True
             except Exception:
                 self.client = None
+                self.usando_nuvem = False
 
         self.carregar()
 
-    # --- GESTÃO DE CONTAS DO KOMMO ---
-    def listar_contas(self):
-        if self.client:
+    def _ler_contas_locais(self):
+        if os.path.exists(self.arquivo_contas_local):
             try:
-                resp = self.client.table("clientes_kommo").select("*").order("nome_empresa").execute()
-                if resp.data:
-                    return resp.data
+                with open(self.arquivo_contas_local, "r", encoding="utf-8") as f:
+                    dados = json.load(f)
+                    if isinstance(dados, list) and dados:
+                        return dados
             except Exception:
                 pass
         return [{
@@ -40,6 +44,23 @@ class CerebroBoosterzinho:
             "etapa_convertido_id": ""
         }]
 
+    def _gravar_contas_locais(self, lista_contas):
+        os.makedirs(self.pasta_raiz, exist_ok=True)
+        with open(self.arquivo_contas_local, "w", encoding="utf-8") as f:
+            json.dump(lista_contas, f, ensure_ascii=False, indent=2)
+
+    # --- GESTÃO DE CONTAS / PASTAS DE CLÍNICAS ---
+    def listar_contas(self):
+        if self.client:
+            try:
+                resp = self.client.table("clientes_kommo").select("*").order("nome_empresa").execute()
+                if resp.data:
+                    self._gravar_contas_locais(resp.data)
+                    return resp.data
+            except Exception:
+                pass
+        return self._ler_contas_locais()
+
     def obter_conta(self, account_id: str):
         if self.client:
             try:
@@ -48,6 +69,9 @@ class CerebroBoosterzinho:
                     return resp.data[0]
             except Exception:
                 pass
+        for c in self._ler_contas_locais():
+            if c.get("account_id") == account_id:
+                return c
         return {
             "account_id": account_id,
             "nome_empresa": account_id,
@@ -58,6 +82,20 @@ class CerebroBoosterzinho:
         }
 
     def salvar_conta(self, dados: dict):
+        # 1. Salva sempre no registro local imediato e cria a pasta física
+        contas_locais = self._ler_contas_locais()
+        atualizou = False
+        for idx, c in enumerate(contas_locais):
+            if c.get("account_id") == dados["account_id"]:
+                contas_locais[idx] = {**c, **dados}
+                atualizou = True
+                break
+        if not atualizou:
+            contas_locais.append(dados)
+        self._gravar_contas_locais(contas_locais)
+        os.makedirs(os.path.join(self.pasta_raiz, dados["account_id"]), exist_ok=True)
+
+        # 2. Sincroniza com o Supabase se conectado
         if self.client:
             try:
                 existente = self.client.table("clientes_kommo") \
@@ -75,9 +113,9 @@ class CerebroBoosterzinho:
                         .insert(dados) \
                         .execute()
             except Exception as e:
-                raise RuntimeError(f"Erro ao salvar conta no Supabase: {getattr(e, 'message', str(e))} | {getattr(e, 'details', '')}")
+                raise RuntimeError(f"Pasta criada localmente, mas erro ao sincronizar no Supabase: {getattr(e, 'message', str(e))} | {getattr(e, 'details', '')}")
 
-    # --- GESTÃO DE CONHECIMENTO ISOLADO POR CONTA ---
+    # --- GESTÃO DE CONHECIMENTO ISOLADO POR PASTA ---
     def carregar(self):
         self.blocos = []
         if self.client:
@@ -97,7 +135,6 @@ class CerebroBoosterzinho:
             except Exception:
                 pass
 
-        # Fallback local isolado por pasta da conta
         arquivos = glob.glob(f"{self.pasta}/**/*.md", recursive=True) + \
                    glob.glob(f"{self.pasta}/**/*.txt", recursive=True)
         for caminho in arquivos:
@@ -108,7 +145,6 @@ class CerebroBoosterzinho:
                     self.blocos.append(f"[{os.path.basename(caminho)}]\n{secao}")
 
     def salvar_documento(self, titulo: str, conteudo: str, origem: str = "manual"):
-        # Remove caracteres de controle/nulos (\x00) comuns na extração de PDFs
         conteudo_limpo = "".join(ch for ch in conteudo if ch >= " " or ch in "\n\r\t")
         titulo_limpo = "".join(ch for ch in titulo if ch >= " ")
 
@@ -206,4 +242,3 @@ class CerebroBoosterzinho:
 
         pontuados.sort(key=lambda x: x[0], reverse=True)
         return "\n---\n".join([b for s, b in pontuados[:top_k]])
-    
