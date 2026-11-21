@@ -7,6 +7,7 @@ from knowledge_base import CerebroBoosterzinho
 from erp_client import consultar_valores_e_agenda
 
 litellm.drop_params = True
+litellm.num_retries = 0
 
 st.set_page_config(page_title="Boosterzinho", page_icon="🤖", layout="wide")
 st.title("🤖 Boosterzinho")
@@ -18,7 +19,7 @@ PROVEDORES_IA = {
         "placeholder": "sk-proj-..."
     },
     "Gemini (Google)": {
-        "modelo": "gemini/gemini-3.8-flash",
+        "modelo": "gemini/gemini-3.8-flash-lite",
         "env_var": "GEMINI_API_KEY",
         "placeholder": "AIzaSy..."
     },
@@ -28,6 +29,10 @@ PROVEDORES_IA = {
         "placeholder": "sk-ant-..."
     }
 }
+
+@st.cache_resource
+def obter_cerebro():
+    return CerebroBoosterzinho()
 
 with st.sidebar:
     ias_selecionadas = st.multiselect(
@@ -100,114 +105,116 @@ with aba_chat:
                 with st.chat_message("user"):
                     st.write(prompt_usuario)
 
-                cerebro = CerebroBoosterzinho()
-                contexto = cerebro.buscar_contexto(prompt_usuario)
+                with st.spinner("Digitando..."):
+                    cerebro = obter_cerebro()
+                    contexto = cerebro.buscar_contexto(prompt_usuario)
 
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "consultar_erp",
-                            "description": "Consulta valor, médico e horários livres para uma especialidade.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "especialidade": {"type": "string"},
-                                    "medico_preferencia": {"type": "string"}
-                                },
-                                "required": ["especialidade"]
+                    tools = [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "consultar_erp",
+                                "description": "Consulta valor, médico e horários livres para uma especialidade.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "especialidade": {"type": "string"},
+                                        "medico_preferencia": {"type": "string"}
+                                    },
+                                    "required": ["especialidade"]
+                                }
                             }
-                        }
-                    },
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "preencher_crm",
-                            "description": "Preenche os campos do paciente no CRM conforme ele informa.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "Nome_Completo": {"type": "string"},
-                                    "Especialidade": {"type": "string"},
-                                    "Medico_Preferencia": {"type": "string"},
-                                    "Valor_Consulta": {"type": "string"},
-                                    "Data_Hora_Agendamento": {"type": "string"},
-                                    "Agendado": {"type": "boolean"}
+                        },
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "preencher_crm",
+                                "description": "Preenche os campos do paciente no CRM conforme ele informa.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "Nome_Completo": {"type": "string"},
+                                        "Especialidade": {"type": "string"},
+                                        "Medico_Preferencia": {"type": "string"},
+                                        "Valor_Consulta": {"type": "string"},
+                                        "Data_Hora_Agendamento": {"type": "string"},
+                                        "Agendado": {"type": "boolean"}
+                                    }
                                 }
                             }
                         }
-                    }
-                ]
+                    ]
 
-                sys_prompt = f"""
-                Você é o Boosterzinho, CRC especialista em agendamento clínico usando SPIN Selling.
-                - Faça 1 pergunta curta por vez (estilo WhatsApp).
-                - Siga SPIN: Situação -> Problema -> Implicação -> Necessidade de Solução.
-                - Use `consultar_erp` para buscar preços e horários.
-                - Sempre que descobrir dados do paciente, chame `preencher_crm`.
-                
-                CONHECIMENTO DA CLÍNICA:
-                {contexto}
-                """
+                    sys_prompt = f"""
+                    Você é o Boosterzinho, CRC especialista em agendamento clínico usando SPIN Selling.
+                    - Seja rápido, direto e natural como no WhatsApp (máximo 2 frases curtas).
+                    - Faça 1 pergunta por vez seguindo SPIN: Situação -> Problema -> Implicação -> Necessidade de Solução.
+                    - Use `consultar_erp` para buscar preços e horários.
+                    - Sempre que descobrir dados do paciente, chame `preencher_crm`.
+                    
+                    CONHECIMENTO DA CLÍNICA:
+                    {contexto}
+                    """
 
-                def executar_ia_com_fallback(mensagens_atuais):
-                    ultimo_erro = None
-                    for ia_atual in ias_prontas:
-                        cfg = PROVEDORES_IA[ia_atual]
-                        modelos_tentar = [cfg["modelo"]]
-                        if "gemini-3.8-flash" in cfg["modelo"]:
-                            modelos_tentar.append("gemini/gemini-3.8-flash-lite")
+                    def executar_ia_com_fallback(mensagens_atuais):
+                        ultimo_erro = None
+                        for ia_atual in ias_prontas:
+                            cfg = PROVEDORES_IA[ia_atual]
+                            modelos_tentar = [cfg["modelo"]]
+                            if "gemini" in cfg["modelo"]:
+                                modelos_tentar.append("gemini/gemini-3.8-flash")
 
-                        for mod in modelos_tentar:
-                            try:
-                                return completion(
-                                    model=mod,
-                                    messages=mensagens_atuais,
-                                    tools=tools,
-                                    api_key=chaves_ativas[ia_atual]
-                                )
-                            except Exception as err:
-                                ultimo_erro = err
-                                continue
-                    raise ultimo_erro
+                            for mod in modelos_tentar:
+                                try:
+                                    return completion(
+                                        model=mod,
+                                        messages=mensagens_atuais,
+                                        tools=tools,
+                                        api_key=chaves_ativas[ia_atual],
+                                        timeout=12,
+                                        num_retries=0,
+                                        reasoning_effort="low"
+                                    )
+                                except Exception as err:
+                                    ultimo_erro = err
+                                    continue
+                        raise ultimo_erro
 
-                msgs = [{"role": "system", "content": sys_prompt}] + st.session_state.mensagens_teste
+                    msgs = [{"role": "system", "content": sys_prompt}] + st.session_state.mensagens_teste
 
-                try:
-                    resp = executar_ia_com_fallback(msgs)
-                    msg_ia = resp.choices[0].message
-
-                    while getattr(msg_ia, "tool_calls", None):
-                        msgs.append(msg_ia.model_dump(exclude_none=True))
-                        for tc in msg_ia.tool_calls:
-                            args = json.loads(tc.function.arguments)
-                            if tc.function.name == "consultar_erp":
-                                res = consultar_valores_e_agenda(args.get("especialidade", ""), args.get("medico_preferencia"))
-                            elif tc.function.name == "preencher_crm":
-                                for k, v in args.items():
-                                    if k == "Agendado" and v:
-                                        st.session_state.ficha_crm["Status_Funil"] = "✅ Consulta Agendada"
-                                    elif v and k in st.session_state.ficha_crm:
-                                        st.session_state.ficha_crm[k] = str(v)
-                                res = {"status": "ok"}
-                            msgs.append({
-                                "role": "tool",
-                                "tool_call_id": tc.id,
-                                "name": tc.function.name,
-                                "content": json.dumps(res, ensure_ascii=False)
-                            })
-
+                    try:
                         resp = executar_ia_com_fallback(msgs)
                         msg_ia = resp.choices[0].message
 
-                    resposta_final = msg_ia.content
-                    st.session_state.mensagens_teste.append({"role": "assistant", "content": resposta_final})
-                    with st.chat_message("assistant"):
-                        st.write(resposta_final)
-                    st.rerun()
+                        while getattr(msg_ia, "tool_calls", None):
+                            msgs.append(msg_ia.model_dump(exclude_none=True))
+                            for tc in msg_ia.tool_calls:
+                                args = json.loads(tc.function.arguments)
+                                if tc.function.name == "consultar_erp":
+                                    res = consultar_valores_e_agenda(args.get("especialidade", ""), args.get("medico_preferencia"))
+                                elif tc.function.name == "preencher_crm":
+                                    for k, v in args.items():
+                                        if k == "Agendado" and v:
+                                            st.session_state.ficha_crm["Status_Funil"] = "✅ Consulta Agendada"
+                                        elif v and k in st.session_state.ficha_crm:
+                                            st.session_state.ficha_crm[k] = str(v)
+                                    res = {"status": "ok"}
+                                msgs.append({
+                                    "role": "tool",
+                                    "tool_call_id": tc.id,
+                                    "name": tc.function.name,
+                                    "content": json.dumps(res, ensure_ascii=False)
+                                })
 
-                except Exception as e:
-                    st.error(f"Erro ao comunicar com o Motor de Inteligência: {e}")
+                            resp = executar_ia_com_fallback(msgs)
+                            msg_ia = resp.choices[0].message
+
+                        resposta_final = msg_ia.content
+                        st.session_state.mensagens_teste.append({"role": "assistant", "content": resposta_final})
+                        st.rerun()
+
+                    except Exception as e:
+                        st.error(f"Erro ao comunicar com o Motor de Inteligência: {e}")
 
     with col_crm:
         st.subheader("📋 Campos Preenchidos no Kommo (Ao Vivo)")
@@ -259,6 +266,7 @@ with aba_cerebro:
                         nome_limpo = nome_arquivo_url.strip().replace(" ", "_") + ".md"
                         with open(f"cerebro/{nome_limpo}", "w", encoding="utf-8") as f:
                             f.write(f"## Fonte: {url_artigo}\n\n{texto_limpo}")
+                        st.cache_resource.clear()
                         st.success(f"Site aprendido com sucesso e salvo em `cerebro/{nome_limpo}`!")
                         st.rerun()
                     except Exception as e:
@@ -281,6 +289,7 @@ with aba_cerebro:
                 nome_salvo = arquivo_subido.name.rsplit(".", 1)[0].replace(" ", "_") + ".md"
                 with open(f"cerebro/{nome_salvo}", "w", encoding="utf-8") as f:
                     f.write(f"## Documento: {arquivo_subido.name}\n\n{texto_extraido}")
+                st.cache_resource.clear()
                 st.success(f"Documento `{arquivo_subido.name}` absorvido pelo Boosterzinho!")
                 st.rerun()
 
@@ -295,6 +304,7 @@ with aba_cerebro:
             if st.button("💾 Salvar Regras Manuais"):
                 with open(caminho_md, "w", encoding="utf-8") as f:
                     f.write(novo_conteudo)
+                st.cache_resource.clear()
                 st.success("Regras atualizadas!")
 
     with col_arquivos:
@@ -309,4 +319,5 @@ with aba_cerebro:
                 if arq != "01_base_conhecimento.md":
                     if col_b.button("🗑️", key=f"del_{arq}", help="Remover arquivo"):
                         os.remove(f"cerebro/{arq}")
+                        st.cache_resource.clear()
                         st.rerun()
