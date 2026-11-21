@@ -1,9 +1,13 @@
 import os
 import json
+import litellm
 import streamlit as st
 from litellm import completion
 from knowledge_base import CerebroBoosterzinho
 from erp_client import consultar_valores_e_agenda
+
+# Ignora automaticamente parâmetros não suportados por modelos específicos (ex: temperature no Gemini 3.8)
+litellm.drop_params = True
 
 st.set_page_config(page_title="Boosterzinho", page_icon="🤖", layout="wide")
 
@@ -33,7 +37,7 @@ with st.sidebar:
     ias_selecionadas = st.multiselect(
         "Motor de Inteligência",
         options=list(PROVEDORES_IA.keys()),
-        default=["ChatGPT (OpenAI)"],
+        default=["Gemini (Google)"],
         placeholder="Selecione uma ou mais IAs..."
     )
 
@@ -160,7 +164,6 @@ with aba_chat:
                                 model=cfg["modelo"],
                                 messages=mensagens_atuais,
                                 tools=tools,
-                                temperature=0.4,
                                 api_key=chaves_ativas[ia_atual]
                             )
                         except Exception as err:
@@ -242,4 +245,55 @@ with aba_cerebro:
         os.makedirs("cerebro", exist_ok=True)
 
         if tipo_fonte == "🌐 Importar de Site / Artigo (URL)":
-            url_artigo
+            url_artigo = st.text_input("Cole o link do site ou artigo:", placeholder="https://exemplo.com.br/artigo-sobre-tratamento")
+            nome_arquivo_url = st.text_input("Nome para salvar esse conhecimento:", placeholder="ex: artigo_dermatologia")
+            if st.button("📥 Extrair e Aprender Conteúdo do Site"):
+                if url_artigo and nome_arquivo_url:
+                    try:
+                        import requests
+                        from bs4 import BeautifulSoup
+                        resp = requests.get(url_artigo, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+                        soup = BeautifulSoup(resp.text, "html.parser")
+                        for tag in soup(["script", "style", "nav", "footer", "header"]):
+                            tag.decompose()
+                        texto_limpo = "\n".join([linha.strip() for linha in soup.get_text().splitlines() if linha.strip()])
+                        
+                        nome_limpo = nome_arquivo_url.strip().replace(" ", "_") + ".md"
+                        with open(f"cerebro/{nome_limpo}", "w", encoding="utf-8") as f:
+                            f.write(f"## Fonte: {url_artigo}\n\n{texto_limpo}")
+                        st.success(f"Site aprendido com sucesso e salvo em `cerebro/{nome_limpo}`!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Não foi possível ler o site: {e}")
+                else:
+                    st.warning("Preencha o link e o nome para salvar.")
+
+        elif tipo_fonte == "📄 Enviar PDF ou TXT":
+            arquivo_subido = st.file_uploader("Escolha um arquivo PDF ou TXT", type=["pdf", "txt", "md"])
+            if arquivo_subido and st.button("📥 Processar e Aprender Arquivo"):
+                texto_extraido = ""
+                if arquivo_subido.name.endswith(".pdf"):
+                    from pypdf import PdfReader
+                    leitor = PdfReader(arquivo_subido)
+                    for pagina in leitor.pages:
+                        texto_extraido += (pagina.extract_text() or "") + "\n\n"
+                else:
+                    texto_extraido = arquivo_subido.read().decode("utf-8", errors="ignore")
+
+                nome_salvo = arquivo_subido.name.rsplit(".", 1)[0].replace(" ", "_") + ".md"
+                with open(f"cerebro/{nome_salvo}", "w", encoding="utf-8") as f:
+                    f.write(f"## Documento: {arquivo_subido.name}\n\n{texto_extraido}")
+                st.success(f"Documento `{arquivo_subido.name}` absorvido pelo Boosterzinho!")
+                st.rerun()
+
+        else:
+            caminho_md = "cerebro/01_base_conhecimento.md"
+            conteudo_atual = ""
+            if os.path.exists(caminho_md):
+                with open(caminho_md, "r", encoding="utf-8") as f:
+                    conteudo_atual = f.read()
+
+            novo_conteudo = st.text_area("Regras, Médicos, Valores e Objeções:", value=conteudo_atual, height=320)
+            if st.button("💾 Salvar Regras Manuais"):
+                with open(caminho_md, "w", encoding="utf-8") as f:
+                    f.
