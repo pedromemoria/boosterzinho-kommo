@@ -11,10 +11,15 @@ from erp_client import consultar_valores_e_agenda
 litellm.drop_params = True
 litellm.num_retries = 0
 
-st.set_page_config(page_title="Boosterzinho", page_icon="🤖", layout="wide")
-st.title("🤖 Boosterzinho")
+st.set_page_config(page_title="Boosterzinho Multi-Conta", page_icon="🤖", layout="wide")
+st.title("🤖 Boosterzinho — Central Multi-Conta Kommo")
 
 PROVEDORES_IA = {
+    "Groq (Llama 3.3 - Ultra Rápido)": {
+        "modelos": ["groq/llama-3.3-70b-versatile"],
+        "env_var": "GROQ_API_KEY",
+        "placeholder": "gsk_..."
+    },
     "Gemini (Google)": {
         "modelos": [
             "gemini/gemini-3.8-flash-lite",
@@ -22,11 +27,6 @@ PROVEDORES_IA = {
         ],
         "env_var": "GEMINI_API_KEY",
         "placeholder": "AIzaSy..."
-    },
-    "Groq (Llama 3.3 - Ultra Rápido)": {
-        "modelos": ["groq/llama-3.3-70b-versatile"],
-        "env_var": "GROQ_API_KEY",
-        "placeholder": "gsk_..."
     },
     "ChatGPT (OpenAI)": {
         "modelos": ["gpt-4o-mini"],
@@ -41,34 +41,6 @@ PROVEDORES_IA = {
 }
 
 with st.sidebar:
-    ias_selecionadas = st.multiselect(
-        "Motor de Inteligência",
-        options=list(PROVEDORES_IA.keys()),
-        default=["Gemini (Google)"],
-        placeholder="Selecione uma ou mais IAs..."
-    )
-
-    chaves_ativas = {}
-    if ias_selecionadas:
-        for ia_nome in ias_selecionadas:
-            cfg = PROVEDORES_IA[ia_nome]
-            chave = st.text_input(
-                f"API Key — {ia_nome}",
-                value=os.getenv(cfg["env_var"], ""),
-                type="password",
-                placeholder=cfg["placeholder"],
-                key=f"key_{cfg['env_var']}"
-            )
-            if chave:
-                os.environ[cfg["env_var"]] = chave
-                chaves_ativas[ia_nome] = chave
-
-        if len(ias_selecionadas) > 1:
-            st.caption(f"⚡ Principal: **{ias_selecionadas[0]}** (demais como reserva).")
-    else:
-        st.warning("Selecione pelo menos uma IA no Motor de Inteligência.")
-
-    st.divider()
     st.subheader("🗄️ Banco de Dados (Supabase)")
     sb_url = st.text_input("Supabase URL", value=os.getenv("SUPABASE_URL", ""), placeholder="https://xxxx.supabase.co")
     sb_key = st.text_input("Supabase Anon Key", value=os.getenv("SUPABASE_KEY", ""), type="password", placeholder="sb_publishable_...")
@@ -77,20 +49,90 @@ with st.sidebar:
     if sb_key:
         os.environ["SUPABASE_KEY"] = sb_key
 
-    cerebro = CerebroBoosterzinho(supabase_url=sb_url, supabase_key=sb_key)
-    if cerebro.usando_nuvem:
-        st.success("🟢 Conectado ao Supabase (Memória Permanente)")
+    cerebro_base = CerebroBoosterzinho(account_id="padrao", supabase_url=sb_url, supabase_key=sb_key)
+    if cerebro_base.usando_nuvem:
+        st.success("🟢 Supabase Conectado")
     else:
-        st.caption("🟡 Modo local ativo (cole URL e Key acima para salvar na nuvem).")
+        st.warning("🟡 Cole URL e Key do Supabase acima")
 
     st.divider()
-    st.subheader("🏥 Dados da Clínica (Kommo)")
-    st.text_input("Subdomínio Kommo", placeholder="ex: clinicateste")
-    st.text_input("Token Kommo", type="password", placeholder="Cole quando tiver a conta")
+    st.subheader("🏢 Conta Kommo Ativa")
 
-aba_chat, aba_cerebro = st.tabs(["💬 Simulador de Atendimento (SPIN)", "🧠 Cérebro (Ensinar o Robô)"])
+    contas = cerebro_base.listar_contas()
+    mapa_contas = {f"{c['nome_empresa']} ({c['account_id']})": c["account_id"] for c in contas}
+    opcoes_select = list(mapa_contas.keys()) + ["➕ Cadastrar Nova Conta..."]
 
-# --- ABA 1: SIMULADOR DE CHAT + FICHA DO CRM ---
+    escolha_conta = st.selectbox("Selecione a Empresa / Clínica:", opcoes_select)
+
+    if escolha_conta == "➕ Cadastrar Nova Conta...":
+        with st.form("form_nova_conta"):
+            novo_id = st.text_input("ID Único (sem espaços)", placeholder="ex: clinica_sorriso")
+            novo_nome = st.text_input("Nome da Empresa", placeholder="ex: Clínica Sorriso")
+            novo_sub = st.text_input("Subdomínio Kommo", placeholder="ex: clinicasorriso")
+            novo_tok = st.text_input("Token Kommo", type="password")
+            if st.form_submit_button("💾 Criar Conta"):
+                if novo_id and novo_nome:
+                    id_limpo = novo_id.strip().lower().replace(" ", "_")
+                    cerebro_base.salvar_conta({
+                        "account_id": id_limpo,
+                        "nome_empresa": novo_nome.strip(),
+                        "kommo_subdominio": novo_sub.strip(),
+                        "kommo_token": novo_tok.strip(),
+                        "prompt_persona": "Você é um consultor comercial especialista em atendimento pelo WhatsApp. Conduza o lead do primeiro contato até o fechamento com empatia, firmeza e quebra de objeções.",
+                        "etapa_convertido_id": ""
+                    })
+                    st.success(f"Conta `{novo_nome}` criada!")
+                    st.rerun()
+                else:
+                    st.error("Preencha o ID e o Nome da Empresa.")
+        conta_ativa_id = "padrao"
+    else:
+        conta_ativa_id = mapa_contas[escolha_conta]
+
+    # Inicializa o cérebro isolado exclusivamente para a conta selecionada
+    cerebro = CerebroBoosterzinho(account_id=conta_ativa_id, supabase_url=sb_url, supabase_key=sb_key)
+    dados_conta = cerebro.obter_conta(conta_ativa_id)
+
+    if st.session_state.get("ultima_conta_selecionada") != conta_ativa_id:
+        st.session_state.ultima_conta_selecionada = conta_ativa_id
+        st.session_state.mensagens_teste = []
+        st.session_state.ficha_crm = {
+            "Nome_Lead": "—",
+            "Interesse_Produto": "—",
+            "Valor_Oferta": "—",
+            "Objecao_Detectada": "Nenhuma",
+            "Status_Funil": "Novo Lead"
+        }
+
+    st.divider()
+    st.subheader("⚡ Motor de Inteligência")
+    ias_selecionadas = st.multiselect(
+        "Ordem de Prioridade (Fallback):",
+        options=list(PROVEDORES_IA.keys()),
+        default=["Groq (Llama 3.3 - Ultra Rápido)", "Gemini (Google)"]
+    )
+
+    chaves_ativas = {}
+    for ia_nome in ias_selecionadas:
+        cfg = PROVEDORES_IA[ia_nome]
+        chave = st.text_input(
+            f"API Key — {ia_nome.split()[0]}",
+            value=os.getenv(cfg["env_var"], ""),
+            type="password",
+            placeholder=cfg["placeholder"],
+            key=f"key_{cfg['env_var']}"
+        )
+        if chave:
+            os.environ[cfg["env_var"]] = chave
+            chaves_ativas[ia_nome] = chave
+
+aba_chat, aba_cerebro, aba_config = st.tabs([
+    "💬 Simulador de Conversão",
+    "🧠 Cérebro & Objeções da Conta",
+    "⚙️ Configurações Kommo da Conta"
+])
+
+# --- ABA 1: SIMULADOR DE ATENDIMENTO DO INÍCIO À CONVERSÃO ---
 with aba_chat:
     col_chat, col_crm = st.columns([1.4, 1])
 
@@ -98,84 +140,79 @@ with aba_chat:
         st.session_state.mensagens_teste = []
     if "ficha_crm" not in st.session_state:
         st.session_state.ficha_crm = {
-            "Nome_Completo": "—",
-            "Especialidade": "—",
-            "Medico_Preferencia": "—",
-            "Valor_Consulta": "—",
-            "Data_Hora_Agendamento": "—",
+            "Nome_Lead": "—",
+            "Interesse_Produto": "—",
+            "Valor_Oferta": "—",
+            "Objecao_Detectada": "Nenhuma",
             "Status_Funil": "Novo Lead"
         }
 
     with col_chat:
-        titulo_chat = f"WhatsApp Simulado ({' + '.join([ia.split()[0] for ia in ias_selecionadas])})" if ias_selecionadas else "WhatsApp Simulado"
-        st.subheader(titulo_chat)
+        st.subheader(f"WhatsApp Simulado — {dados_conta['nome_empresa']}")
 
         for msg in st.session_state.mensagens_teste:
             with st.chat_message(msg["role"]):
                 st.write(msg["content"])
 
-        prompt_usuario = st.chat_input("Digite como se fosse um paciente no WhatsApp...")
+        prompt_usuario = st.chat_input("Simule um lead chegando do Kommo...")
 
         if prompt_usuario:
             ias_prontas = [ia for ia in ias_selecionadas if ia in chaves_ativas]
             if not ias_prontas:
-                st.error("Selecione uma IA no Motor de Inteligência e preencha a respectiva API Key na barra lateral.")
+                st.error("Preencha pelo menos uma API Key na barra lateral.")
             else:
                 st.session_state.mensagens_teste.append({"role": "user", "content": prompt_usuario})
                 with st.chat_message("user"):
                     st.write(prompt_usuario)
 
-                with st.spinner("Digitando..."):
-                    contexto = cerebro.buscar_contexto(prompt_usuario)
+                with st.spinner("Respondendo..."):
+                    contexto_dinamico = cerebro.buscar_contexto(prompt_usuario, top_k=4)
+                    regras_fixas = cerebro.obter_documento("01_oferta_e_regras.md")
+                    matriz_objecoes = cerebro.obter_documento("02_quebra_objecoes.md")
 
                     tools = [
                         {
                             "type": "function",
                             "function": {
-                                "name": "consultar_erp",
-                                "description": "Consulta valor, médico e horários livres para uma especialidade.",
+                                "name": "atualizar_lead_kommo",
+                                "description": "Atualiza os dados do lead no Kommo, registra objeções quebradas e marca como convertido quando fechar.",
                                 "parameters": {
                                     "type": "object",
                                     "properties": {
-                                        "especialidade": {"type": "string"},
-                                        "medico_preferencia": {"type": "string"}
-                                    },
-                                    "required": ["especialidade"]
-                                }
-                            }
-                        },
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": "preencher_crm",
-                                "description": "Preenche os campos do paciente no CRM conforme ele informa.",
-                                "parameters": {
-                                    "type": "object",
-                                    "properties": {
-                                        "Nome_Completo": {"type": "string"},
-                                        "Especialidade": {"type": "string"},
-                                        "Medico_Preferencia": {"type": "string"},
-                                        "Valor_Consulta": {"type": "string"},
-                                        "Data_Hora_Agendamento": {"type": "string"},
-                                        "Agendado": {"type": "boolean"}
+                                        "Nome_Lead": {"type": "string"},
+                                        "Interesse_Produto": {"type": "string"},
+                                        "Valor_Oferta": {"type": "string"},
+                                        "Objecao_Detectada": {"type": "string", "description": "Ex: Preço alto, Vou pensar, Concorrência, Sem tempo"},
+                                        "Status_Funil": {"type": "string", "enum": ["Em Qualificação", "Quebrando Objeção", "Pronto para Fechar", "🏆 CONVERTIDO"]}
                                     }
                                 }
                             }
                         }
                     ]
 
+                    persona = dados_conta.get("prompt_persona") or "Você é um especialista comercial de alta conversão."
+
                     sys_prompt = f"""
-                    Você é o Boosterzinho, CRC especialista em agendamento clínico usando SPIN Selling.
-                    - Seja rápido, direto e natural como no WhatsApp (máximo 2 frases curtas).
-                    - Faça 1 pergunta por vez seguindo SPIN: Situação -> Problema -> Implicação -> Necessidade de Solução.
-                    - Use `consultar_erp` para buscar preços e horários.
-                    - Sempre que descobrir dados do paciente, chame `preencher_crm`.
-                    
-                    CONHECIMENTO DA CLÍNICA:
-                    {contexto}
+                    {persona}
+
+                    SUA MISSÃO NO WHATSAPP:
+                    1. Conduzir o lead desde o primeiro 'oi' até a CONVERSÃO (agendamento, fechamento ou pagamento).
+                    2. Fazer 1 pergunta curta e estratégica por vez (estilo WhatsApp, máximo 2 a 3 frases).
+                    3. Descobrir a dor/necessidade antes de apenas jogar preço.
+                    4. QUEBRA DE OBJEÇÕES: Sempre que o lead hesitar (ex: 'tá caro', 'vou pensar', 'vou falar com meu marido/sócio', 'depois eu vejo'), acolha em 1 frase curta, use os argumentos da MATRIZ DE OBJEÇÕES abaixo para reverter e finalize com uma pergunta de avanço/fechamento.
+                    5. Sempre que identificar dados do lead, uma objeção ou o fechamento, chame `atualizar_lead_kommo`.
+
+                    === OFERTA, PREÇOS E REGRAS DA CONTA ===
+                    {regras_fixas}
+
+                    === MATRIZ DE QUEBRA DE OBJEÇÕES DA CONTA ===
+                    {matriz_objecoes}
+
+                    === TRECHOS DE APOIO (PDFs / SITES IMPORTADOS) ===
+                    {contexto_dinamico}
                     """
 
-                    def executar_ia_com_fallback(mensagens_atuais):
+                    def executar_ia(mensagens_atuais):
                         ultimo_erro = None
                         for ia_atual in ias_prontas:
                             cfg = PROVEDORES_IA[ia_atual]
@@ -186,44 +223,39 @@ with aba_chat:
                                         messages=mensagens_atuais,
                                         tools=tools,
                                         api_key=chaves_ativas[ia_atual],
-                                        timeout=12,
+                                        timeout=15,
                                         num_retries=0,
                                         reasoning_effort="low"
                                     )
                                 except Exception as err:
                                     ultimo_erro = err
                                     if idx < len(cfg["modelos"]) - 1:
-                                        time.sleep(1.5)
+                                        time.sleep(1)
                                     continue
                         raise ultimo_erro
 
                     msgs = [{"role": "system", "content": sys_prompt}] + st.session_state.mensagens_teste
 
                     try:
-                        resp = executar_ia_com_fallback(msgs)
+                        resp = executar_ia(msgs)
                         msg_ia = resp.choices[0].message
 
                         while getattr(msg_ia, "tool_calls", None):
                             msgs.append(msg_ia.model_dump(exclude_none=True))
                             for tc in msg_ia.tool_calls:
                                 args = json.loads(tc.function.arguments)
-                                if tc.function.name == "consultar_erp":
-                                    res = consultar_valores_e_agenda(args.get("especialidade", ""), args.get("medico_preferencia"))
-                                elif tc.function.name == "preencher_crm":
+                                if tc.function.name == "atualizar_lead_kommo":
                                     for k, v in args.items():
-                                        if k == "Agendado" and v:
-                                            st.session_state.ficha_crm["Status_Funil"] = "✅ Consulta Agendada"
-                                        elif v and k in st.session_state.ficha_crm:
+                                        if v and k in st.session_state.ficha_crm:
                                             st.session_state.ficha_crm[k] = str(v)
-                                    res = {"status": "ok"}
                                 msgs.append({
                                     "role": "tool",
                                     "tool_call_id": tc.id,
                                     "name": tc.function.name,
-                                    "content": json.dumps(res, ensure_ascii=False)
+                                    "content": json.dumps({"status": "atualizado_no_kommo"}, ensure_ascii=False)
                                 })
 
-                            resp = executar_ia_com_fallback(msgs)
+                            resp = executar_ia(msgs)
                             msg_ia = resp.choices[0].message
 
                         resposta_final = msg_ia.content
@@ -231,102 +263,140 @@ with aba_chat:
                         st.rerun()
 
                     except Exception as e:
-                        st.error(f"Erro ao comunicar com o Motor de Inteligência: {e}")
+                        st.error(f"Erro no Motor de Inteligência: {e}")
 
     with col_crm:
-        st.subheader("📋 Campos Preenchidos no Kommo (Ao Vivo)")
-        st.info("Veja aqui o que o Boosterzinho está preenchendo nos bastidores do CRM:")
+        st.subheader("📊 Painel do Lead no Kommo (Ao Vivo)")
         for campo, valor in st.session_state.ficha_crm.items():
             st.text_input(campo.replace("_", " "), value=valor, disabled=True)
 
-        if st.button("🔄 Reiniciar Conversa de Teste"):
+        if st.button("🔄 Novo Lead de Teste"):
             st.session_state.mensagens_teste = []
             st.session_state.ficha_crm = {
-                "Nome_Completo": "—",
-                "Especialidade": "—",
-                "Medico_Preferencia": "—",
-                "Valor_Consulta": "—",
-                "Data_Hora_Agendamento": "—",
+                "Nome_Lead": "—",
+                "Interesse_Produto": "—",
+                "Valor_Oferta": "—",
+                "Objecao_Detectada": "Nenhuma",
                 "Status_Funil": "Novo Lead"
             }
             st.rerun()
 
-# --- ABA 2: EDITOR DO CÉREBRO (MULTI-FONTES + SUPABASE) ---
+# --- ABA 2: CÉREBRO & QUEBRA DE OBJEÇÕES ISOLADOS POR CONTA ---
 with aba_cerebro:
-    st.subheader("📚 Central de Aprendizado do Boosterzinho")
-    st.write("Adicione sites, artigos, PDFs ou edite as regras manuais. Tudo fica salvo na nuvem (Supabase).")
+    st.subheader(f"🧠 Cérebro Exclusivo: {dados_conta['nome_empresa']}")
+    st.caption(f"ID da Conta: `{conta_ativa_id}` — Tudo salvo aqui só é usado nos leads desta conta.")
 
-    col_fontes, col_arquivos = st.columns([1.5, 1])
+    col_ed, col_lista = st.columns([1.6, 1])
 
-    with col_fontes:
-        tipo_fonte = st.radio(
-            "Como deseja ensinar o Boosterzinho?",
-            ["🌐 Importar de Site / Artigo (URL)", "📄 Enviar PDF ou TXT", "✍️ Editar Base Manual"],
+    with col_ed:
+        modo_edicao = st.radio(
+            "O que deseja configurar para esta conta?",
+            [
+                "💎 1. Oferta, Preços & Regras",
+                "🛡️ 2. Quebra de Objeções",
+                "🌐 3. Importar Site / Artigo",
+                "📄 4. Enviar PDF / TXT"
+            ],
             horizontal=True
         )
 
-        if tipo_fonte == "🌐 Importar de Site / Artigo (URL)":
-            url_artigo = st.text_input("Cole o link do site ou artigo:", placeholder="https://exemplo.com.br/artigo")
-            nome_arquivo_url = st.text_input("Nome para salvar esse conhecimento:", placeholder="ex: artigo_dermatologia")
-            if st.button("📥 Extrair e Salvar no Banco"):
-                if url_artigo and nome_arquivo_url:
+        if modo_edicao == "💎 1. Oferta, Preços & Regras":
+            txt_oferta = cerebro.obter_documento("01_oferta_e_regras.md")
+            novo_oferta = st.text_area(
+                "Descreva produtos/serviços, valores, formas de pagamento, diferenciais e critério de conversão:",
+                value=txt_oferta,
+                height=300,
+                placeholder="Ex: Tratamento X custa R$ 1.200 em até 10x. Inclui avaliação + 3 sessões. Objetivo: agendar avaliação presencial."
+            )
+            if st.button("💾 Salvar Oferta & Regras"):
+                cerebro.salvar_documento("01_oferta_e_regras.md", novo_oferta, origem="oferta")
+                st.success("Oferta e regras salvas para esta conta!")
+
+        elif modo_edicao == "🛡️ 2. Quebra de Objeções":
+            txt_obj = cerebro.obter_documento("02_quebra_objecoes.md")
+            novo_obj = st.text_area(
+                "Liste as objeções comuns desta conta e como o robô deve contornar cada uma:",
+                value=txt_obj,
+                height=300,
+                placeholder="OBJEÇÃO: 'Achei caro'\nRESPOSTA: Valide o cuidado com o investimento, destaque o parcelamento em 10x e o resultado duradouro, e pergunte qual dia fica melhor para iniciar.\n\nOBJEÇÃO: 'Vou pensar / falar com marido'\nRESPOSTA: Concorde que é uma decisão importante, mas lembre que a agenda da semana fecha hoje e ofereça deixar um horário pré-reservado sem compromisso."
+            )
+            if st.button("💾 Salvar Matriz de Objeções"):
+                cerebro.salvar_documento("02_quebra_objecoes.md", novo_obj, origem="objecoes")
+                st.success("Matriz de quebra de objeções salva!")
+
+        elif modo_edicao == "🌐 3. Importar Site / Artigo":
+            url_artigo = st.text_input("Link do site ou página de vendas:", placeholder="https://...")
+            nome_url = st.text_input("Nome do material:", placeholder="ex: pagina_procedimento")
+            if st.button("📥 Extrair e Salvar na Conta"):
+                if url_artigo and nome_url:
                     try:
                         resp = requests.get(f"https://r.jina.ai/{url_artigo}", timeout=20)
-                        if resp.status_code == 200 and len(resp.text.strip()) > 100:
-                            texto_limpo = resp.text.strip()
-                        else:
+                        texto_limpo = resp.text.strip() if resp.status_code == 200 else ""
+                        if len(texto_limpo) < 100:
                             from bs4 import BeautifulSoup
                             r_html = requests.get(url_artigo, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
                             soup = BeautifulSoup(r_html.text, "html.parser")
                             for tag in soup(["script", "style", "nav", "footer", "header"]):
                                 tag.decompose()
                             texto_limpo = "\n".join([l.strip() for l in soup.get_text().splitlines() if l.strip()])
-
-                        nome_limpo = nome_arquivo_url.strip().replace(" ", "_") + ".md"
+                        nome_limpo = nome_url.strip().replace(" ", "_") + ".md"
                         cerebro.salvar_documento(nome_limpo, f"## Fonte: {url_artigo}\n\n{texto_limpo}", origem="url")
-                        st.success(f"Site salvo permanentemente como `{nome_limpo}`!")
+                        st.success(f"Salvo como `{nome_limpo}` na conta `{dados_conta['nome_empresa']}`!")
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Não foi possível ler o site: {e}")
-                else:
-                    st.warning("Preencha o link e o nome para salvar.")
+                        st.error(f"Erro ao ler site: {e}")
 
-        elif tipo_fonte == "📄 Enviar PDF ou TXT":
-            arquivo_subido = st.file_uploader("Escolha um arquivo PDF ou TXT", type=["pdf", "txt", "md"])
-            if arquivo_subido and st.button("📥 Processar e Salvar no Banco"):
-                texto_extraido = ""
-                if arquivo_subido.name.endswith(".pdf"):
+        else:
+            arq_up = st.file_uploader("Enviar PDF ou TXT desta conta:", type=["pdf", "txt", "md"])
+            if arq_up and st.button("📥 Processar e Salvar na Conta"):
+                texto_ext = ""
+                if arq_up.name.endswith(".pdf"):
                     from pypdf import PdfReader
-                    leitor = PdfReader(arquivo_subido)
-                    for pagina in leitor.pages:
-                        texto_extraido += (pagina.extract_text() or "") + "\n\n"
+                    leitor = PdfReader(arq_up)
+                    for pag in leitor.pages:
+                        texto_ext += (pag.extract_text() or "") + "\n\n"
                 else:
-                    texto_extraido = arquivo_subido.read().decode("utf-8", errors="ignore")
-
-                nome_salvo = arquivo_subido.name.rsplit(".", 1)[0].replace(" ", "_") + ".md"
-                cerebro.salvar_documento(nome_salvo, f"## Documento: {arquivo_subido.name}\n\n{texto_extraido}", origem="arquivo")
-                st.success(f"Documento `{arquivo_subido.name}` salvo permanentemente!")
+                    texto_ext = arq_up.read().decode("utf-8", errors="ignore")
+                nome_salvo = arq_up.name.rsplit(".", 1)[0].replace(" ", "_") + ".md"
+                cerebro.salvar_documento(nome_salvo, f"## Documento: {arq_up.name}\n\n{texto_ext}", origem="arquivo")
+                st.success(f"`{arq_up.name}` adicionado à conta!")
                 st.rerun()
 
-        else:
-            conteudo_atual = cerebro.obter_documento("01_base_conhecimento.md")
-            novo_conteudo = st.text_area("Regras, Médicos, Valores e Objeções:", value=conteudo_atual, height=320)
-            if st.button("💾 Salvar Regras Manuais"):
-                cerebro.salvar_documento("01_base_conhecimento.md", novo_conteudo, origem="manual")
-                st.success("Regras salvas permanentemente!")
-
-    with col_arquivos:
-        st.subheader("🗂️ Conhecimentos Salvos")
+    with col_lista:
+        st.subheader("🗂️ Arquivos desta Conta")
         docs = cerebro.listar_documentos()
         if not docs:
-            st.info("Nenhum documento salvo ainda.")
+            st.info("Nenhum conhecimento cadastrado para esta conta ainda.")
         else:
             for d in docs:
-                titulo = d["titulo"]
-                col_a, col_b = st.columns([4, 1])
-                col_a.write(f"📄 `{titulo}`")
-                if titulo != "01_base_conhecimento.md":
-                    if col_b.button("🗑️", key=f"del_{titulo}", help="Remover documento"):
-                        cerebro.remover_documento(titulo)
-                        st.rerun()
-                        
+                tit = d["titulo"]
+                c1, c2 = st.columns([4, 1])
+                c1.write(f"📄 `{tit}`")
+                if c2.button("🗑️", key=f"del_{conta_ativa_id}_{tit}"):
+                    cerebro.remover_documento(tit)
+                    st.rerun()
+
+# --- ABA 3: CONFIGURAÇÕES DO KOMMO DA CONTA ---
+with aba_config:
+    st.subheader(f"⚙️ Credenciais e Persona — {dados_conta['nome_empresa']}")
+    with st.form("form_editar_conta"):
+        ed_nome = st.text_input("Nome da Empresa", value=dados_conta.get("nome_empresa", ""))
+        ed_sub = st.text_input("Subdomínio Kommo (ex: minhaempresa)", value=dados_conta.get("kommo_subdominio", ""))
+        ed_tok = st.text_input("Token de Integração Kommo", value=dados_conta.get("kommo_token", ""), type="password")
+        ed_etapa = st.text_input("ID da Etapa 'Convertido' no Funil Kommo (opcional)", value=dados_conta.get("etapa_convertido_id", ""))
+        ed_persona = st.text_area(
+            "Personalidade e Tom de Voz do Robô nesta conta:",
+            value=dados_conta.get("prompt_persona", "Você é um consultor comercial especialista em atendimento pelo WhatsApp. Conduza o lead do primeiro contato até o fechamento com empatia, firmeza e quebra de objeções."),
+            height=140
+        )
+        if st.form_submit_button("💾 Salvar Configurações da Conta"):
+            cerebro.salvar_conta({
+                "account_id": conta_ativa_id,
+                "nome_empresa": ed_nome.strip(),
+                "kommo_subdominio": ed_sub.strip(),
+                "kommo_token": ed_tok.strip(),
+                "etapa_convertido_id": ed_etapa.strip(),
+                "prompt_persona": ed_persona.strip()
+            })
+            st.success("Configurações da conta atualizadas no Supabase!")
+            st.rerun()
