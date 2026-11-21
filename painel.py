@@ -6,14 +6,11 @@ from litellm import completion
 from knowledge_base import CerebroBoosterzinho
 from erp_client import consultar_valores_e_agenda
 
-# Ignora automaticamente parâmetros não suportados por modelos específicos (ex: temperature no Gemini 3.8)
 litellm.drop_params = True
 
 st.set_page_config(page_title="Boosterzinho", page_icon="🤖", layout="wide")
-
 st.title("🤖 Boosterzinho")
 
-# Mapa dos provedores e modelos suportados
 PROVEDORES_IA = {
     "ChatGPT (OpenAI)": {
         "modelo": "gpt-4o-mini",
@@ -32,7 +29,6 @@ PROVEDORES_IA = {
     }
 }
 
-# Barra lateral para configurações e chaves API
 with st.sidebar:
     ias_selecionadas = st.multiselect(
         "Motor de Inteligência",
@@ -57,7 +53,7 @@ with st.sidebar:
                 chaves_ativas[ia_nome] = chave
 
         if len(ias_selecionadas) > 1:
-            st.caption(f"⚡ Principal: **{ias_selecionadas[0]}** (as demais entram como reserva automática se falhar).")
+            st.caption(f"⚡ Principal: **{ias_selecionadas[0]}** (as demais entram como reserva).")
     else:
         st.warning("Selecione pelo menos uma IA no Motor de Inteligência.")
 
@@ -67,7 +63,6 @@ with st.sidebar:
     st.text_input("Token Kommo", type="password", placeholder="Cole quando tiver a conta")
     st.caption("Quando a clínica conectar o Kommo, os dados simulados ao lado serão gravados direto no CRM.")
 
-# Abas principais do aplicativo
 aba_chat, aba_cerebro = st.tabs(["💬 Simulador de Atendimento (SPIN)", "🧠 Cérebro (Ensinar o Robô)"])
 
 # --- ABA 1: SIMULADOR DE CHAT + FICHA DO CRM ---
@@ -213,8 +208,7 @@ with aba_chat:
         st.subheader("📋 Campos Preenchidos no Kommo (Ao Vivo)")
         st.info("Veja aqui o que o Boosterzinho está preenchendo nos bastidores do CRM:")
         for campo, valor in st.session_state.ficha_crm.items():
-            rotulo = campo.replace("_", " ")
-            st.text_input(rotulo, value=valor, disabled=True)
+            st.text_input(campo.replace("_", " "), value=valor, disabled=True)
 
         if st.button("🔄 Reiniciar Conversa de Teste"):
             st.session_state.mensagens_teste = []
@@ -245,7 +239,7 @@ with aba_cerebro:
         os.makedirs("cerebro", exist_ok=True)
 
         if tipo_fonte == "🌐 Importar de Site / Artigo (URL)":
-            url_artigo = st.text_input("Cole o link do site ou artigo:", placeholder="https://exemplo.com.br/artigo-sobre-tratamento")
+            url_artigo = st.text_input("Cole o link do site ou artigo:", placeholder="https://exemplo.com.br/artigo")
             nome_arquivo_url = st.text_input("Nome para salvar esse conhecimento:", placeholder="ex: artigo_dermatologia")
             if st.button("📥 Extrair e Aprender Conteúdo do Site"):
                 if url_artigo and nome_arquivo_url:
@@ -257,7 +251,6 @@ with aba_cerebro:
                         for tag in soup(["script", "style", "nav", "footer", "header"]):
                             tag.decompose()
                         texto_limpo = "\n".join([linha.strip() for linha in soup.get_text().splitlines() if linha.strip()])
-                        
                         nome_limpo = nome_arquivo_url.strip().replace(" ", "_") + ".md"
                         with open(f"cerebro/{nome_limpo}", "w", encoding="utf-8") as f:
                             f.write(f"## Fonte: {url_artigo}\n\n{texto_limpo}")
@@ -296,4 +289,14 @@ with aba_cerebro:
             novo_conteudo = st.text_area("Regras, Médicos, Valores e Objeções:", value=conteudo_atual, height=320)
             if st.button("💾 Salvar Regras Manuais"):
                 with open(caminho_md, "w", encoding="utf-8") as f:
-                    f.
+                    f.write(novo_conteudo)
+                st.success("Regras atualizadas!")
+
+    with col_arquivos:
+        st.subheader("🗂️ Arquivos na Memória")
+        arquivos_ativos = os.listdir("cerebro") if os.path.exists("cerebro") else []
+        if not arquivos_ativos:
+            st.info("Nenhum arquivo na memória ainda.")
+        else:
+            for arq in sorted(arquivos_ativos):
+                col_a, col_
