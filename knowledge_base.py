@@ -115,15 +115,20 @@ class CerebroBoosterzinho:
                 raise RuntimeError(f"Pasta criada localmente, mas erro ao sincronizar no Supabase: {getattr(e, 'message', str(e))} | {getattr(e, 'details', '')}")
 
     def excluir_conta(self, account_id: str):
-        if account_id == "padrao":
-            raise ValueError("A pasta padrão não pode ser excluída.")
+        # 1. Remove todos os documentos e o cadastro da clínica no Supabase
+        if self.client:
+            try:
+                self.client.table("documentos_cerebro").delete().eq("account_id", account_id).execute()
+                self.client.table("clientes_kommo").delete().eq("account_id", account_id).execute()
+            except Exception as e:
+                raise RuntimeError(f"Erro ao excluir pasta no Supabase: {getattr(e, 'message', str(e))} | {getattr(e, 'details', '')}")
 
-        # 1. Remove do registro local e apaga a pasta física
+        # 2. Remove do registro local e apaga a pasta física
         contas_locais = [c for c in self._ler_contas_locais() if c.get("account_id") != account_id]
         if not contas_locais:
             contas_locais = [{
-                "account_id": "padrao",
-                "nome_empresa": "Conta Principal (Padrão)",
+                "account_id": "nova_clinica",
+                "nome_empresa": "Nova Clínica",
                 "kommo_subdominio": "",
                 "kommo_token": "",
                 "prompt_persona": "",
@@ -134,14 +139,6 @@ class CerebroBoosterzinho:
         caminho_pasta = os.path.join(self.pasta_raiz, account_id)
         if os.path.exists(caminho_pasta):
             shutil.rmtree(caminho_pasta, ignore_errors=True)
-
-        # 2. Remove todos os documentos e o cadastro da clínica no Supabase
-        if self.client:
-            try:
-                self.client.table("documentos_cerebro").delete().eq("account_id", account_id).execute()
-                self.client.table("clientes_kommo").delete().eq("account_id", account_id).execute()
-            except Exception as e:
-                raise RuntimeError(f"Erro ao excluir pasta no Supabase: {getattr(e, 'message', str(e))} | {getattr(e, 'details', '')}")
 
     # --- GESTÃO DE CONHECIMENTO ISOLADO POR PASTA ---
     def carregar(self):
