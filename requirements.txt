@@ -5,3 +5,5 @@ openai
 numpy
 python-dotenv
 streamlit
+beautifulsoup4
+pypdf
