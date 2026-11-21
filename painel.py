@@ -154,16 +154,21 @@ with aba_chat:
                     ultimo_erro = None
                     for ia_atual in ias_prontas:
                         cfg = PROVEDORES_IA[ia_atual]
-                        try:
-                            return completion(
-                                model=cfg["modelo"],
-                                messages=mensagens_atuais,
-                                tools=tools,
-                                api_key=chaves_ativas[ia_atual]
-                            )
-                        except Exception as err:
-                            ultimo_erro = err
-                            continue
+                        modelos_tentar = [cfg["modelo"]]
+                        if "gemini-3.8-flash" in cfg["modelo"]:
+                            modelos_tentar.append("gemini/gemini-3.8-flash-lite")
+
+                        for mod in modelos_tentar:
+                            try:
+                                return completion(
+                                    model=mod,
+                                    messages=mensagens_atuais,
+                                    tools=tools,
+                                    api_key=chaves_ativas[ia_atual]
+                                )
+                            except Exception as err:
+                                ultimo_erro = err
+                                continue
                     raise ultimo_erro
 
                 msgs = [{"role": "system", "content": sys_prompt}] + st.session_state.mensagens_teste
@@ -299,4 +304,9 @@ with aba_cerebro:
             st.info("Nenhum arquivo na memória ainda.")
         else:
             for arq in sorted(arquivos_ativos):
-                col_a, col_
+                col_a, col_b = st.columns([4, 1])
+                col_a.write(f"📄 `{arq}`")
+                if arq != "01_base_conhecimento.md":
+                    if col_b.button("🗑️", key=f"del_{arq}", help="Remover arquivo"):
+                        os.remove(f"cerebro/{arq}")
+                        st.rerun()
