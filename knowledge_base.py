@@ -1,21 +1,14 @@
 import os
 import glob
-import numpy as np
-from openai import OpenAI
+import re
 
 class CerebroBoosterzinho:
     def __init__(self, pasta="cerebro", api_key=None):
         self.pasta = pasta
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self.client = OpenAI(api_key=self.api_key) if self.api_key else None
         self.blocos = []
-        self.embeddings = []
-        if self.client:
-            self.carregar()
+        self.carregar()
 
     def carregar(self):
-        if not self.client:
-            return
         arquivos = glob.glob(f"{self.pasta}/**/*.md", recursive=True) + \
                    glob.glob(f"{self.pasta}/**/*.txt", recursive=True)
         
@@ -27,21 +20,19 @@ class CerebroBoosterzinho:
                 for secao in secoes:
                     self.blocos.append(f"[{os.path.basename(caminho)}]\n{secao}")
 
-        if self.blocos:
-            resp = self.client.embeddings.create(
-                model="text-embedding-3-small",
-                input=self.blocos
-            )
-            self.embeddings = [item.embedding for item in resp.data]
-
     def buscar_contexto(self, pergunta: str, top_k: int = 3) -> str:
-        if not self.blocos or not self.client:
+        if not self.blocos:
             return ""
-        q_emb = self.client.embeddings.create(
-            model="text-embedding-3-small",
-            input=[pergunta]
-        ).data[0].embedding
+        palavras = set(re.findall(r'\w{3,}', pergunta.lower()))
+        if not palavras:
+            return "\n---\n".join(self.blocos[:top_k])
 
-        scores = [np.dot(q_emb, emb) for emb in self.embeddings]
-        indices = np.argsort(scores)[-top_k:][::-1]
-        return "\n---\n".join([self.blocos[i] for i in indices])
+        pontuados = []
+        for bloco in self.blocos:
+            bloco_lower = bloco.lower()
+            score = sum(1 for p in palavras if p in bloco_lower)
+            pontuados.append((score, bloco))
+
+        pontuados.sort(key=lambda x: x[0], reverse=True)
+        melhores = [b for s, b in pontuados[:top_k]]
+        return "\n---\n".join(melhores)
