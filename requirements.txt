@@ -1,11 +1,9 @@
-fastapi
-uvicorn
-requests
-openai
-litellm
-numpy
-python-dotenv
 streamlit
+litellm
+supabase
+requests
 beautifulsoup4
 pypdf
-supabase
+fastapi
+uvicorn
+python-multipart
