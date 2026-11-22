@@ -164,6 +164,7 @@ dados_conta = cerebro.obter_conta(conta_ativa_id)
 if st.session_state.get("ultima_conta_selecionada") != conta_ativa_id:
     st.session_state.ultima_conta_selecionada = conta_ativa_id
     st.session_state.mensagens_teste = []
+    st.session_state.mensagens_feedback = []
     st.session_state.ultimas_fontes = ""
     st.session_state.ficha_crm = {
         "Nome_Lead": "—",
@@ -184,9 +185,10 @@ with col_top1:
 with col_top2:
     st.metric("Clínicas", len(contas))
 
-aba_pastas, aba_arquivos, aba_chat, aba_config, aba_chaves = st.tabs([
+aba_pastas, aba_arquivos, aba_treinamento, aba_chat, aba_config, aba_chaves = st.tabs([
     "🏥 Clínicas",
     "📄 Arquivos & Objeções",
+    "🧠 Treinar Cérebro",
     "💬 Simulador",
     "⚙️ Config. Kommo",
     "🔑 Chaves & Conexões"
@@ -366,7 +368,168 @@ with aba_arquivos:
                     cerebro.remover_documento(tit)
                     st.rerun()
 
-# --- ABA 3: SIMULADOR DE ATENDIMENTO DA CLÍNICA ---
+# --- ABA 3: CHAT INTERNO DE TREINAMENTO & FEEDBACK DO CÉREBRO ---
+with aba_treinamento:
+    st.subheader(f"🧠 Treinamento Interno & Feedback — {dados_conta['nome_empresa']}")
+    st.caption("Converse com o Boosterzinho como treinador. Ele valida suas dicas, ajusta a postura e grava automaticamente cada aprendizado na memória da clínica.")
+
+    col_fb_chat, col_fb_mem = st.columns([1.4, 1])
+
+    if "mensagens_feedback" not in st.session_state:
+        st.session_state.mensagens_feedback = []
+
+    with col_fb_chat:
+        st.markdown("#### 💬 Sala de Feedback com o Boosterzinho")
+        if not st.session_state.mensagens_feedback:
+            st.info(
+                "💡 **Exemplos do que você pode dizer aqui:**\n"
+                "- *'Quando o paciente perguntar o valor da consulta, nunca fale o preço logo de cara; pergunte primeiro qual sintoma ou objetivo ele busca.'*\n"
+                "- *'Seja mais acolhedor na primeira mensagem e sempre termine com uma pergunta curta.'*\n"
+                "- *'Sempre que o paciente pedir horário, ofereça duas opções específicas (manhã ou tarde).'*"
+            )
+
+        for m_fb in st.session_state.mensagens_feedback:
+            with st.chat_message(m_fb["role"]):
+                st.write(m_fb["content"])
+
+        feedback_input = st.chat_input("Dê um feedback, correção ou dica de atendimento para o Boosterzinho...")
+
+        if feedback_input:
+            ias_prontas = [ia for ia in ias_selecionadas if ia in chaves_ativas]
+            if not ias_prontas:
+                st.error("Preencha pelo menos uma API Key na aba '🔑 Chaves & Conexões'.")
+            else:
+                st.session_state.mensagens_feedback.append({"role": "user", "content": feedback_input})
+                with st.chat_message("user"):
+                    st.write(feedback_input)
+
+                with st.spinner("Boosterzinho analisando seu feedback e atualizando o cérebro..."):
+                    regras_atuais = cerebro.obter_documento("01_oferta_e_regras.md")[:1500]
+                    objecoes_atuais = cerebro.obter_documento("02_quebra_objecoes.md")[:1500]
+                    aprendizados_atuais = cerebro.obter_documento("03_aprendizados_feedback.md")
+
+                    sys_treinador = f"""
+                    Você é o Boosterzinho conversando INTERNAMENTE com o seu gestor/treinador da clínica **{dados_conta['nome_empresa']}** (não é um paciente!).
+
+                    SUA TAREFA:
+                    1. Receber o feedback, crítica, ajuste de tom ou dica comercial do gestor com humildade, inteligência e foco em conversão.
+                    2. Validar se o feedback faz sentido frente às regras da clínica, fazer 1 pergunta de alinhamento se algo estiver vago, ou confirmar imediatamente como você vai aplicar isso nos próximos atendimentos (dando um exemplo curto de como vai responder aos leads).
+                    3. SEMPRE que o gestor der uma diretriz, correção ou dica válida, chame a ferramenta `salvar_aprendizado_cerebro` para gravar essa regra consolidada na memória permanente desta clínica (mantendo as regras anteriores que não foram substituídas e atualizando/adicionando a nova).
+
+                    === REGRAS ATUAIS DA CLÍNICA ===
+                    {regras_atuais}
+
+                    === OBJEÇÕES ATUAIS ===
+                    {objecoes_atuais}
+
+                    === APRENDIZADOS JÁ SALVOS NO CÉREBRO ===
+                    {aprendizados_atuais}
+                    """
+
+                    tools_treino = [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "salvar_aprendizado_cerebro",
+                                "description": "Grava ou atualiza a lista consolidada de diretrizes e aprendizados vindos do feedback do gestor na memória permanente da clínica.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "diretrizes_consolidadas": {
+                                            "type": "string",
+                                            "description": "Texto em Markdown organizado com tópicos claros ('- Regra...') contendo todos os aprendizados ativos da clínica."
+                                        }
+                                    },
+                                    "required": ["diretrizes_consolidadas"]
+                                }
+                            }
+                        }
+                    ]
+
+                    def executar_ia_treino(mensagens_atuais):
+                        erros_t = []
+                        for ia_atual in ias_prontas:
+                            cfg = PROVEDORES_IA[ia_atual]
+                            lista_modelos = (
+                                obter_modelos_groq_ativos(chaves_ativas[ia_atual])
+                                if cfg["modelos"] == ["AUTO_GROQ"]
+                                else cfg["modelos"]
+                            )
+                            for mod in lista_modelos:
+                                try:
+                                    kwargs_c = {
+                                        "model": mod,
+                                        "messages": mensagens_atuais,
+                                        "tools": tools_treino,
+                                        "api_key": chaves_ativas[ia_atual],
+                                        "timeout": 25,
+                                        "num_retries": 0
+                                    }
+                                    if "gemini" in mod:
+                                        kwargs_c["reasoning_effort"] = "low"
+                                    return completion(**kwargs_c)
+                                except Exception as err:
+                                    erros_t.append(f"[{mod}]: {err}")
+                                    time.sleep(0.5)
+                        raise RuntimeError(" | ".join(erros_t))
+
+                    msgs_t = [{"role": "system", "content": sys_treinador}] + st.session_state.mensagens_feedback[-10:]
+
+                    try:
+                        resp_t = executar_ia_treino(msgs_t)
+                        msg_t = resp_t.choices[0].message
+
+                        while getattr(msg_t, "tool_calls", None):
+                            msgs_t.append(msg_t.model_dump(exclude_none=True))
+                            for tc in msg_t.tool_calls:
+                                args = json.loads(tc.function.arguments)
+                                if tc.function.name == "salvar_aprendizado_cerebro":
+                                    novo_md = args.get("diretrizes_consolidadas", "").strip()
+                                    if novo_md:
+                                        cerebro.salvar_documento("03_aprendizados_feedback.md", novo_md, origem="feedback_gestor")
+                                    res_t = {"status": "aprendizado_gravado_com_sucesso"}
+                                else:
+                                    res_t = {"status": "ok"}
+
+                                msgs_t.append({
+                                    "role": "tool",
+                                    "tool_call_id": tc.id,
+                                    "name": tc.function.name,
+                                    "content": json.dumps(res_t, ensure_ascii=False)
+                                })
+
+                            resp_t = executar_ia_treino(msgs_t)
+                            msg_t = resp_t.choices[0].message
+
+                        st.session_state.mensagens_feedback.append({"role": "assistant", "content": msg_t.content})
+                        st.rerun()
+
+                    except Exception as e_tr:
+                        st.error(f"Erro ao processar feedback: {e_tr}")
+
+    with col_fb_mem:
+        st.markdown("#### 🧬 Memória de Aprendizados Ativos")
+        st.caption("Tudo o que estiver salvo abaixo é obedecido automaticamente no **Simulador** e no **WhatsApp Real (Kommo)**.")
+
+        txt_aprendizados = cerebro.obter_documento("03_aprendizados_feedback.md")
+        novo_aprendizado_editado = st.text_area(
+            "Diretrizes aprendidas pelo Boosterzinho (editável manualmente se desejar):",
+            value=txt_aprendizados,
+            height=330,
+            placeholder="Ainda não há aprendizados gravados via feedback. Converse ao lado para ensinar o robô!"
+        )
+        c_mem1, c_mem2 = st.columns(2)
+        with c_mem1:
+            if st.button("💾 Salvar Edição Manual", use_container_width=True):
+                cerebro.salvar_documento("03_aprendizados_feedback.md", novo_aprendizado_editado, origem="feedback_gestor")
+                st.success("Memória atualizada!")
+                st.rerun()
+        with c_mem2:
+            if st.button("🧹 Limpar Conversa", use_container_width=True):
+                st.session_state.mensagens_feedback = []
+                st.rerun()
+
+# --- ABA 4: SIMULADOR DE ATENDIMENTO DA CLÍNICA ---
 with aba_chat:
     col_chat, col_crm = st.columns([1.4, 1])
 
@@ -406,6 +569,7 @@ with aba_chat:
                     contexto_dinamico = cerebro.buscar_contexto(prompt_usuario, top_k=3)[:2500]
                     regras_fixas = cerebro.obter_documento("01_oferta_e_regras.md")[:2000]
                     matriz_objecoes = cerebro.obter_documento("02_quebra_objecoes.md")[:2000]
+                    aprendizados_gestor = cerebro.obter_documento("03_aprendizados_feedback.md")[:2000]
                     st.session_state.ultimas_fontes = contexto_dinamico or "Nenhum trecho específico encontrado."
 
                     tools = [
@@ -457,6 +621,9 @@ with aba_chat:
                     4. Descobrir a dor/necessidade antes de apenas jogar preço.
                     5. QUEBRA DE OBJEÇÕES: Sempre que o lead hesitar (ex: 'tá caro', 'vou pensar', 'vou falar com meu marido/sócio', 'depois eu vejo'), acolha em 1 frase curta, use os argumentos da MATRIZ DE OBJEÇÕES e dos PDFs abaixo para reverter e finalize com uma pergunta de avanço/fechamento.
                     6. Sempre que identificar dados do lead, uma objeção ou o fechamento, chame `atualizar_lead_kommo`.
+
+                    === DIRETRIZES E APRENDIZADOS DO TREINAMENTO INTERNO (PRIORIDADE MÁXIMA) ===
+                    {aprendizados_gestor}
 
                     === OFERTA, PREÇOS E REGRAS DA CLÍNICA ===
                     {regras_fixas}
@@ -558,7 +725,7 @@ with aba_chat:
             }
             st.rerun()
 
-# --- ABA 4: CONFIGURAÇÕES DO KOMMO DA CLÍNICA ---
+# --- ABA 5: CONFIGURAÇÕES DO KOMMO DA CLÍNICA ---
 with aba_config:
     st.subheader(f"⚙️ Credenciais Kommo e Persona — {dados_conta['nome_empresa']}")
     with st.form("form_editar_conta"):
@@ -595,7 +762,7 @@ with aba_config:
             except Exception as e_cfg_del:
                 st.error(str(e_cfg_del))
 
-# --- ABA 5: SESSÃO SEPARADA PARA CHAVES & CONEXÕES GLOBAIS ---
+# --- ABA 6: SESSÃO SEPARADA PARA CHAVES & CONEXÕES GLOBAIS ---
 with aba_chaves:
     st.subheader("🔑 Chaves de API & Conexões Globais do Sistema")
     st.caption("Configure aqui uma única vez o banco de dados na nuvem e os provedores de IA que atenderão todas as pastas de clínicas.")
