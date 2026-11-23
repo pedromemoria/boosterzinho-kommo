@@ -24,7 +24,45 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 mensagens_processadas = set()
 cache_clinicas = {}
 buffer_mensagens = {}
+cache_modelos_groq = {"timestamp": 0, "lista": []}
 TTL_CACHE = 60
+
+
+def obter_modelos_groq_ativos(api_key: str):
+    if not api_key:
+        return []
+    agora = time.time()
+    if cache_modelos_groq["lista"] and (agora - cache_modelos_groq["timestamp"] < 300):
+        return cache_modelos_groq["lista"]
+
+    try:
+        resp = requests.get(
+            "https://api.groq.com/openai/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=6
+        )
+        if resp.status_code == 200:
+            dados = resp.json().get("data", [])
+            ignorar = (
+                "whisper", "guard", "tts", "vision", "embed",
+                "orpheus", "safeguard", "gpt-oss", "qwen"
+            )
+            ativos = [
+                f"groq/{m['id']}" for m in dados
+                if m.get("active", True) and not any(x in m["id"].lower() for x in ignorar)
+            ]
+            ativos.sort(key=lambda m: (
+                0 if "llama-4" in m or "70b" in m else
+                1 if "llama" in m else 2
+            ))
+            if ativos:
+                cache_modelos_groq["lista"] = ativos[:3]
+                cache_modelos_groq["timestamp"] = agora
+                return cache_modelos_groq["lista"]
+    except Exception:
+        pass
+
+    return ["groq/meta-llama/llama-4-scout-17b-16e-instruct"]
 
 
 def obter_contexto_clinica_cache(account_id: str):
@@ -56,8 +94,7 @@ def obter_contexto_clinica_cache(account_id: str):
 def montar_fila_gratuita():
     fila = []
     if GROQ_API_KEY:
-        fila.append(("groq/llama-3.1-8b-instant", GROQ_API_KEY))
-        fila.append(("groq/llama-3.3-70b-versatile", GROQ_API_KEY))
+        fila.extend([(m, GROQ_API_KEY) for m in obter_modelos_groq_ativos(GROQ_API_KEY)])
     if CEREBRAS_API_KEY:
         fila.append(("cerebras/llama-3.3-70b", CEREBRAS_API_KEY))
         fila.append(("cerebras/llama3.1-8b", CEREBRAS_API_KEY))
