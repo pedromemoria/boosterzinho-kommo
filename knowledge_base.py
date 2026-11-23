@@ -206,7 +206,6 @@ class CerebroBoosterzinho:
                 melhor_item = item
 
         if melhor_item and melhor_score >= limiar:
-            # Incrementa contador de uso
             if self.client and melhor_item.get("id"):
                 try:
                     novo_total = int(melhor_item.get("vezes_usada", 1)) + 1
@@ -226,7 +225,6 @@ class CerebroBoosterzinho:
         if len(perg_limpa) < 2 or len(resp_limpa) < 5:
             return
 
-        # Evita duplicar se já existir algo muito parecido
         if self.buscar_memoria_reflexa(perg_limpa, limiar=0.85):
             return
 
