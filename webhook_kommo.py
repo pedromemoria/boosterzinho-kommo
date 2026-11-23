@@ -56,7 +56,7 @@ def obter_modelos_groq_ativos(api_key: str):
                 1 if "llama" in m else 2
             ))
             if ativos:
-                cache_modelos_groq["lista"] = ativos[:3]
+                cache_modelos_groq["lista"] = ativos[:5]
                 cache_modelos_groq["timestamp"] = agora
                 return cache_modelos_groq["lista"]
     except Exception:
@@ -80,7 +80,7 @@ def obter_contexto_clinica_cache(account_id: str):
     fixos = {
         "regras": cerebro.obter_documento("01_oferta_e_regras.md")[:900],
         "objecoes": cerebro.obter_documento("02_quebra_objecoes.md")[:900],
-        "aprendizados": cerebro.obter_documento("03_aprendizados_feedback.md")[:900],
+        "aprendizados": cerebro.obter_documento("03_aprendizados_feedback.md")[:2500],
     }
     cache_clinicas[account_id] = {
         "timestamp": agora,
@@ -126,15 +126,6 @@ def gerar_resposta_hibrida(account_id: str, texto_lead: str, nome_lead: str = "P
 
     sys_prompt = f"""{persona}
 
-REGRAS WHATSAPP:
-- Atenda {nome_lead} e conduza até o agendamento/conversão.
-- Use SPIN Selling: faça 1 pergunta curta por vez (máximo 2 a 3 frases).
-- Descubra a dor/necessidade antes de falar preço.
-- Se houver objeção, acolha em 1 frase, contorne com os argumentos abaixo e finalize com pergunta de avanço.
-
-=== APRENDIZADOS DO TREINAMENTO ===
-{fixos['aprendizados']}
-
 === OFERTA E REGRAS ===
 {fixos['regras']}
 
@@ -142,35 +133,47 @@ REGRAS WHATSAPP:
 {fixos['objecoes']}
 
 === BASE DA CLÍNICA ===
-{contexto_dinamico}"""
+{contexto_dinamico}
+
+=== ORDENS OBRIGATÓRIAS DO GESTOR (PRIORIDADE MÁXIMA — OBEDEÇA ACIMA DE TUDO) ===
+{fixos['aprendizados']}
+
+REGRAS FINAIS DE RESPOSTA WHATSAPP:
+- Siga rigorosamente TODAS as ordens obrigatórias do gestor listadas acima.
+- Atenda {nome_lead} e conduza até o agendamento/conversão.
+- Use SPIN Selling: faça 1 pergunta curta por vez (máximo 2 a 3 frases).
+- Descubra a dor/necessidade antes de falar preço."""
 
     msgs = [
         {"role": "system", "content": sys_prompt},
         {"role": "user", "content": texto_lead}
     ]
 
-    for mod, chave in montar_fila_gratuita():
-        try:
-            kwargs = {
-                "model": mod,
-                "messages": msgs,
-                "api_key": chave,
-                "max_tokens": 300,
-                "temperature": 0.4,
-                "timeout": 12,
-                "num_retries": 0
-            }
-            if "gemini" in mod:
-                kwargs["reasoning_effort"] = "low"
+    for tentativa in range(2):
+        for mod, chave in montar_fila_gratuita():
+            try:
+                kwargs = {
+                    "model": mod,
+                    "messages": msgs,
+                    "api_key": chave,
+                    "max_tokens": 300,
+                    "temperature": 0.4,
+                    "timeout": 12,
+                    "num_retries": 0
+                }
+                if "gemini" in mod:
+                    kwargs["reasoning_effort"] = "low"
 
-            resp = completion(**kwargs)
-            conteudo = (resp.choices[0].message.content or "").strip()
-            if conteudo:
-                cerebro.registrar_aprendizado_autonomo(texto_lead, conteudo)
-                return conteudo, dados_conta
-        except Exception as e:
-            print(f"[RODÍZIO GRATUITO] {mod} ocupado: {e}")
-            continue
+                resp = completion(**kwargs)
+                conteudo = (resp.choices[0].message.content or "").strip()
+                if conteudo:
+                    cerebro.registrar_aprendizado_autonomo(texto_lead, conteudo)
+                    return conteudo, dados_conta
+            except Exception as e:
+                print(f"[RODÍZIO GRATUITO] {mod} ocupado: {e}")
+                continue
+        if tentativa == 0:
+            time.sleep(2.0)
 
     return None, dados_conta
 
