@@ -28,6 +28,17 @@ cache_modelos_groq = {"timestamp": 0, "lista": []}
 TTL_CACHE = 60
 
 
+def limitar_tamanho_whatsapp(texto: str, max_chars: int = 240) -> str:
+    texto = " ".join(texto.split()).strip()
+    if len(texto) <= max_chars:
+        return texto
+    recorte = texto[:max_chars]
+    ultimo_fim = max(recorte.rfind("."), recorte.rfind("?"), recorte.rfind("!"))
+    if ultimo_fim > 60:
+        return recorte[:ultimo_fim + 1].strip()
+    return recorte.rsplit(" ", 1)[0].strip() + "..."
+
+
 def obter_modelos_groq_ativos(api_key: str):
     if not api_key:
         return []
@@ -116,7 +127,7 @@ def gerar_resposta_hibrida(account_id: str, texto_lead: str, nome_lead: str = "P
     resposta_reflexa = cerebro.buscar_memoria_reflexa(texto_lead, limiar=0.78)
     if resposta_reflexa:
         print(f"[MEMÓRIA REFLEXA - SEM IA] Respondido direto do Supabase para {account_id}")
-        return resposta_reflexa, dados_conta
+        return limitar_tamanho_whatsapp(resposta_reflexa, max_chars=240), dados_conta
 
     # 2. CAMADA IA: Pergunta inédita -> aciona rodízio gratuito e salva o aprendizado
     contexto_dinamico = cerebro.buscar_contexto(texto_lead, top_k=2)[:800]
@@ -139,10 +150,10 @@ def gerar_resposta_hibrida(account_id: str, texto_lead: str, nome_lead: str = "P
 {fixos['aprendizados']}
 
 REGRAS FINAIS DE RESPOSTA WHATSAPP:
+- LIMITE RÍGIDO: Escreva no máximo 2 frases curtas (até 220 caracteres no total). Nunca escreva dois parágrafos.
+- Não repita o que {nome_lead} já disse nem faça introduções longas.
 - Siga rigorosamente TODAS as ordens obrigatórias do gestor listadas acima.
-- Atenda {nome_lead} e conduza até o agendamento/conversão.
-- Use SPIN Selling: faça 1 pergunta curta por vez (máximo 2 a 3 frases).
-- Descubra a dor/necessidade antes de falar preço."""
+- Faça apenas 1 pergunta direta por mensagem."""
 
     msgs = [
         {"role": "system", "content": sys_prompt},
@@ -156,7 +167,7 @@ REGRAS FINAIS DE RESPOSTA WHATSAPP:
                     "model": mod,
                     "messages": msgs,
                     "api_key": chave,
-                    "max_tokens": 300,
+                    "max_tokens": 110,
                     "temperature": 0.4,
                     "timeout": 12,
                     "num_retries": 0
@@ -167,6 +178,7 @@ REGRAS FINAIS DE RESPOSTA WHATSAPP:
                 resp = completion(**kwargs)
                 conteudo = (resp.choices[0].message.content or "").strip()
                 if conteudo:
+                    conteudo = limitar_tamanho_whatsapp(conteudo, max_chars=240)
                     cerebro.registrar_aprendizado_autonomo(texto_lead, conteudo)
                     return conteudo, dados_conta
             except Exception as e:
