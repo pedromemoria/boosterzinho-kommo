@@ -3,6 +3,15 @@ import glob
 import json
 import shutil
 import re
+import unicodedata
+from difflib import SequenceMatcher
+
+
+def _normalizar_texto(texto: str) -> str:
+    texto = unicodedata.normalize("NFKD", texto.lower()).encode("ascii", "ignore").decode("ascii")
+    texto = re.sub(r"[^\w\s]", " ", texto)
+    return re.sub(r"\s+", " ", texto).strip()
+
 
 class CerebroBoosterzinho:
     def __init__(self, account_id="padrao", pasta="cerebro", supabase_url=None, supabase_key=None):
@@ -10,6 +19,7 @@ class CerebroBoosterzinho:
         self.pasta_raiz = pasta
         self.pasta = os.path.join(pasta, self.account_id)
         self.arquivo_contas_local = os.path.join(pasta, "_contas_locais.json")
+        self.arquivo_memoria_local = os.path.join(self.pasta, "_memoria_reflexa.json")
 
         raw_url = (supabase_url or os.getenv("SUPABASE_URL", "")).strip()
         raw_url = re.sub(r'[\s\r\n]+', '', raw_url)
@@ -124,6 +134,7 @@ class CerebroBoosterzinho:
         if self.client:
             try:
                 self.client.table("documentos_cerebro").delete().eq("account_id", account_id).execute()
+                self.client.table("memoria_aprendizada").delete().eq("account_id", account_id).execute()
                 self.client.table("clientes_kommo").delete().eq("account_id", account_id).execute()
             except Exception as e:
                 msg_err = getattr(e, "message", str(e))
@@ -146,6 +157,123 @@ class CerebroBoosterzinho:
         if os.path.exists(caminho_pasta):
             shutil.rmtree(caminho_pasta, ignore_errors=True)
 
+    # --- MEMÓRIA REFLEXA (RESPOSTA AUTÔNOMA SEM IA) ---
+    def listar_memorias(self):
+        if self.client:
+            try:
+                resp = self.client.table("memoria_aprendizada") \
+                    .select("*") \
+                    .eq("account_id", self.account_id) \
+                    .order("vezes_usada", desc=True) \
+                    .execute()
+                if resp.data is not None:
+                    return resp.data
+            except Exception:
+                pass
+        if os.path.exists(self.arquivo_memoria_local):
+            try:
+                with open(self.arquivo_memoria_local, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return []
+
+    def buscar_memoria_reflexa(self, pergunta: str, limiar: float = 0.78):
+        """Procura uma resposta já aprendida com alta similaridade para responder sem gastar IA."""
+        perg_norm = _normalizar_texto(pergunta)
+        if len(perg_norm) < 2:
+            return None
+
+        palavras_perg = set(perg_norm.split())
+        memorias = self.listar_memorias()
+        melhor_score = 0.0
+        melhor_item = None
+
+        for item in memorias:
+            if not item.get("aprovada", True):
+                continue
+            gat_norm = _normalizar_texto(item.get("gatilho_pergunta", ""))
+            if not gat_norm:
+                continue
+
+            ratio_seq = SequenceMatcher(None, perg_norm, gat_norm).ratio()
+            palavras_gat = set(gat_norm.split())
+            intersecao = len(palavras_perg & palavras_gat) / max(len(palavras_perg | palavras_gat), 1)
+            score = (ratio_seq * 0.65) + (intersecao * 0.35)
+
+            if score > melhor_score:
+                melhor_score = score
+                melhor_item = item
+
+        if melhor_item and melhor_score >= limiar:
+            # Incrementa contador de uso
+            if self.client and melhor_item.get("id"):
+                try:
+                    novo_total = int(melhor_item.get("vezes_usada", 1)) + 1
+                    self.client.table("memoria_aprendizada") \
+                        .update({"vezes_usada": novo_total}) \
+                        .eq("id", melhor_item["id"]) \
+                        .execute()
+                except Exception:
+                    pass
+            return melhor_item.get("resposta_aprendida")
+        return None
+
+    def registrar_aprendizado_autonomo(self, pergunta: str, resposta: str):
+        """Guarda automaticamente novos pares pergunta -> resposta para uso futuro sem IA."""
+        perg_limpa = pergunta.strip()[:300]
+        resp_limpa = resposta.strip()[:1500]
+        if len(perg_limpa) < 2 or len(resp_limpa) < 5:
+            return
+
+        # Evita duplicar se já existir algo muito parecido
+        if self.buscar_memoria_reflexa(perg_limpa, limiar=0.85):
+            return
+
+        if self.client:
+            try:
+                self.client.table("memoria_aprendizada").insert({
+                    "account_id": self.account_id,
+                    "gatilho_pergunta": perg_limpa,
+                    "resposta_aprendida": resp_limpa,
+                    "vezes_usada": 1,
+                    "aprovada": True
+                }).execute()
+                return
+            except Exception:
+                pass
+
+        os.makedirs(self.pasta, exist_ok=True)
+        lista = self.listar_memorias()
+        lista.append({
+            "id": int(os.urandom(3).hex(), 16),
+            "account_id": self.account_id,
+            "gatilho_pergunta": perg_limpa,
+            "resposta_aprendida": resp_limpa,
+            "vezes_usada": 1,
+            "aprovada": True
+        })
+        with open(self.arquivo_memoria_local, "w", encoding="utf-8") as f:
+            json.dump(lista, f, ensure_ascii=False, indent=2)
+
+    def atualizar_memoria(self, mem_id: int, novo_gatilho: str, nova_resposta: str):
+        if self.client:
+            try:
+                self.client.table("memoria_aprendizada") \
+                    .update({"gatilho_pergunta": novo_gatilho.strip(), "resposta_aprendida": nova_resposta.strip()}) \
+                    .eq("id", mem_id) \
+                    .execute()
+            except Exception:
+                pass
+
+    def remover_memoria(self, mem_id: int):
+        if self.client:
+            try:
+                self.client.table("memoria_aprendizada").delete().eq("id", mem_id).execute()
+            except Exception:
+                pass
+
+    # --- GESTÃO DE CONHECIMENTO ISOLADO POR PASTA ---
     def carregar(self):
         self.blocos = []
         if self.client:
