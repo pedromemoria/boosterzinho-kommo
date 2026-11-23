@@ -13,6 +13,17 @@ litellm.num_retries = 0
 st.set_page_config(page_title="Boosterzinho", page_icon="🤖", layout="wide")
 
 
+def limitar_tamanho_whatsapp(texto: str, max_chars: int = 240) -> str:
+    texto = " ".join(texto.split()).strip()
+    if len(texto) <= max_chars:
+        return texto
+    recorte = texto[:max_chars]
+    ultimo_fim = max(recorte.rfind("."), recorte.rfind("?"), recorte.rfind("!"))
+    if ultimo_fim > 60:
+        return recorte[:ultimo_fim + 1].strip()
+    return recorte.rsplit(" ", 1)[0].strip() + "..."
+
+
 def obter_modelos_groq_ativos(api_key: str):
     if not api_key:
         return []
@@ -43,7 +54,7 @@ def obter_modelos_groq_ativos(api_key: str):
     return ["groq/meta-llama/llama-4-scout-17b-16e-instruct"]
 
 
-def chamar_ia_com_rodizio_groq(ias_prontas, chaves_ativas, mensagens, max_tokens=400, temperature=0.35):
+def chamar_ia_com_rodizio_groq(ias_prontas, chaves_ativas, mensagens, max_tokens=110, temperature=0.35):
     erros_detalhados = []
     for tentativa in range(2):
         for ia_atual in ias_prontas:
@@ -577,16 +588,18 @@ with aba_chat:
 {aprendizados_gestor}
 
 REGRAS FINAIS DE RESPOSTA:
+- LIMITE RÍGIDO: Escreva no máximo 2 frases curtas (até 220 caracteres no total). Nunca escreva dois parágrafos.
+- Não repita o que o paciente já disse nem faça introduções longas.
 - Siga rigorosamente TODAS as ordens obrigatórias do gestor listadas acima.
-- Conduza o lead até o agendamento usando SPIN Selling (1 pergunta curta por vez, máximo 2 a 3 frases).
-- Descubra a dor antes de informar preços."""
+- Faça apenas 1 pergunta direta por mensagem."""
 
                     msgs = [{"role": "system", "content": sys_prompt}] + st.session_state.mensagens_teste[-6:]
                     resposta_final, erros_t = chamar_ia_com_rodizio_groq(
-                        ias_prontas, chaves_ativas, msgs, max_tokens=320, temperature=0.4
+                        ias_prontas, chaves_ativas, msgs, max_tokens=110, temperature=0.4
                     )
 
                     if resposta_final:
+                        resposta_final = limitar_tamanho_whatsapp(resposta_final, max_chars=240)
                         cerebro.registrar_aprendizado_autonomo(prompt_usuario, resposta_final)
                         st.session_state.mensagens_teste.append({"role": "assistant", "content": resposta_final})
                         st.rerun()
