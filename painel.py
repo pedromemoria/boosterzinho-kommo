@@ -336,6 +336,7 @@ with aba_arquivos:
             novo_oferta = st.text_area("Procedimentos, valores, formas de pagamento e regras:", value=txt_oferta, height=300)
             if st.button("💾 Salvar na Pasta"):
                 cerebro.salvar_documento("01_oferta_e_regras.md", novo_oferta, origem="oferta")
+                cerebro.limpar_memorias_clinica()
                 st.success("Salvo na pasta!")
                 st.rerun()
 
@@ -344,6 +345,7 @@ with aba_arquivos:
             novo_obj = st.text_area("Objeções frequentes e respostas para o robô contornar:", value=txt_obj, height=300)
             if st.button("💾 Salvar Objeções na Pasta"):
                 cerebro.salvar_documento("02_quebra_objecoes.md", novo_obj, origem="objecoes")
+                cerebro.limpar_memorias_clinica()
                 st.success("Salvo na pasta!")
                 st.rerun()
 
@@ -382,6 +384,7 @@ with aba_arquivos:
                     texto_ext = arq_up.read().decode("utf-8", errors="ignore")
                 nome_salvo = arq_up.name.rsplit(".", 1)[0].replace(" ", "_") + ".md"
                 cerebro.salvar_documento(nome_salvo, f"## Documento: {arq_up.name}\n\n{texto_ext}", origem="arquivo")
+                cerebro.limpar_memorias_clinica()
                 st.success(f"`{arq_up.name}` salvo!")
                 st.rerun()
 
@@ -396,12 +399,13 @@ with aba_arquivos:
                 c1.write(f"📄 `{tit}`")
                 if c2.button("🗑️", key=f"del_{conta_ativa_id}_{tit}"):
                     cerebro.remover_documento(tit)
+                    cerebro.limpar_memorias_clinica()
                     st.rerun()
 
-# --- ABA 3: TREINAR CÉREBRO & MEMÓRIA REFLEXA (ZERO-IA) ---
+# --- ABA 3: TREINAR CÉREBRO & MEMÓRIA REFLEXA ---
 with aba_treinamento:
     st.subheader(f"🧠 Treinamento & Memória Reflexa — {dados_conta['nome_empresa']}")
-    st.caption("Quanto mais o robô conversa, mais respostas ficam gravadas na Memória Reflexa para responder **sem gastar Groq/IA**.")
+    st.caption("Ensine regras no chat abaixo: cada feedback é gravado nas diretrizes e aplicado imediatamente em todos os atendimentos.")
 
     sub_fb, sub_mem = st.tabs(["💬 1. Dar Feedback ao Cérebro", "⚡ 2. Memória Reflexa (Respostas sem IA)"])
 
@@ -422,52 +426,63 @@ with aba_treinamento:
                     st.error("Preencha pelo menos uma API Key na aba '🔑 Chaves & Conexões'.")
                 else:
                     st.session_state.mensagens_feedback.append({"role": "user", "content": feedback_input})
-                    with st.spinner("Atualizando diretrizes do cérebro..."):
-                        aprendizados_atuais = cerebro.obter_documento("03_aprendizados_feedback.md")[:1500]
-                        sys_treinador = f"""Você é o Boosterzinho conversando com o gestor da clínica **{dados_conta['nome_empresa']}**.
-Receba o feedback do gestor, valide como vai aplicar nos atendimentos e atualize a lista consolidada de regras.
+                    with st.spinner("Gravando nova diretriz no cérebro..."):
+                        aprendizados_atuais = cerebro.obter_documento("03_aprendizados_feedback.md").strip()
+                        sys_treinador = f"""Você é o Boosterzinho recebendo um treinamento do gestor da clínica **{dados_conta['nome_empresa']}**.
+Sua missão é transformar a instrução do gestor em UMA regra clara, imperativa e curta para ser seguida em todos os atendimentos.
 
-FORMATO OBRIGATÓRIO DA SUA RESPOSTA:
-Responda em duas partes separadas exatamente pela tag `===REGRAS_ATUALIZADAS===`:
-1. Antes da tag: sua resposta curta, acolhedora e objetiva confirmando ao gestor que entendeu e dando 1 exemplo prático de como vai aplicar.
-2. Depois da tag: a lista completa em Markdown (tópicos `- ...`) contendo TODAS as diretrizes antigas somadas à nova regra aprendida.
+RETORNE APENAS UM JSON VÁLIDO NESTE FORMATO EXATO (sem texto fora do JSON):
+{{
+  "resposta_gestor": "Sua confirmação curta, simpática e objetiva mostrando que entendeu e dando 1 exemplo de como vai aplicar.",
+  "nova_regra_bullet": "- Regra imperativa e direta extraída do feedback do gestor."
+}}"""
 
-=== APRENDIZADOS ATUAIS ===
-{aprendizados_atuais}"""
-
-                        msgs_t = [{"role": "system", "content": sys_treinador}] + st.session_state.mensagens_feedback[-6:]
+                        msgs_t = [
+                            {"role": "system", "content": sys_treinador},
+                            {"role": "user", "content": f"Regras já existentes:\n{aprendizados_atuais}\n\nNovo feedback do gestor:\n{feedback_input}"}
+                        ]
                         resposta_bruta, erro_tr = chamar_ia_com_rodizio_groq(
-                            ias_prontas, chaves_ativas, msgs_t, max_tokens=500, temperature=0.3
+                            ias_prontas, chaves_ativas, msgs_t, max_tokens=450, temperature=0.2
                         )
 
                         if resposta_bruta:
-                            if "===REGRAS_ATUALIZADAS===" in resposta_bruta:
-                                fala_chat, novas_regras = resposta_bruta.split("===REGRAS_ATUALIZADAS===", 1)
-                                if novas_regras.strip():
-                                    cerebro.salvar_documento(
-                                        "03_aprendizados_feedback.md",
-                                        novas_regras.strip(),
-                                        origem="feedback_gestor"
-                                    )
-                            else:
-                                fala_chat = resposta_bruta
-                                linha_nova = f"{aprendizados_atuais}\n- {feedback_input.strip()}".strip()
-                                cerebro.salvar_documento(
-                                    "03_aprendizados_feedback.md",
-                                    linha_nova,
-                                    origem="feedback_gestor"
-                                )
+                            fala_chat = "Entendido! Já adicionei essa regra às diretrizes da clínica."
+                            nova_regra = f"- {feedback_input.strip()}"
+                            try:
+                                trecho_json = resposta_bruta[resposta_bruta.find("{"):resposta_bruta.rfind("}") + 1]
+                                dados_fb = json.loads(trecho_json)
+                                fala_chat = dados_fb.get("resposta_gestor") or fala_chat
+                                regra_extraida = (dados_fb.get("nova_regra_bullet") or "").strip()
+                                if regra_extraida:
+                                    nova_regra = regra_extraida if regra_extraida.startswith("-") else f"- {regra_extraida}"
+                            except Exception:
+                                pass
 
-                            st.session_state.mensagens_feedback.append({"role": "assistant", "content": fala_chat.strip()})
+                            lista_consolidada = f"{aprendizados_atuais}\n{nova_regra}".strip() if aprendizados_atuais else nova_regra
+                            cerebro.salvar_documento(
+                                "03_aprendizados_feedback.md",
+                                lista_consolidada,
+                                origem="feedback_gestor"
+                            )
+                            cerebro.limpar_memorias_clinica()
+
+                            st.session_state.mensagens_feedback.append({"role": "assistant", "content": fala_chat})
                             st.rerun()
                         else:
                             st.error(f"Erro ao processar feedback: {erro_tr}")
 
         with col_fb_rules:
             txt_aprendizados = cerebro.obter_documento("03_aprendizados_feedback.md")
-            novo_ap = st.text_area("Diretrizes aprendidas (ativas):", value=txt_aprendizados, height=300)
+            chave_dinamica_area = f"area_regras_{conta_ativa_id}_{len(txt_aprendizados)}_{hash(txt_aprendizados)}"
+            novo_ap = st.text_area(
+                "Diretrizes aprendidas (ativas):",
+                value=txt_aprendizados,
+                height=300,
+                key=chave_dinamica_area
+            )
             if st.button("💾 Salvar Diretrizes Manualmente", use_container_width=True):
                 cerebro.salvar_documento("03_aprendizados_feedback.md", novo_ap, origem="feedback_gestor")
+                cerebro.limpar_memorias_clinica()
                 st.success("Diretrizes salvas!")
                 st.rerun()
 
@@ -543,23 +558,28 @@ with aba_chat:
                     contexto_dinamico = cerebro.buscar_contexto(prompt_usuario, top_k=2)[:800]
                     regras_fixas = cerebro.obter_documento("01_oferta_e_regras.md")[:800]
                     matriz_objecoes = cerebro.obter_documento("02_quebra_objecoes.md")[:800]
-                    aprendizados_gestor = cerebro.obter_documento("03_aprendizados_feedback.md")[:800]
-                    st.session_state.ultimas_fontes = contexto_dinamico or "Aprendizado inédito salvo na Memória Reflexa."
+                    aprendizados_gestor = cerebro.obter_documento("03_aprendizados_feedback.md")[:2500]
+                    st.session_state.ultimas_fontes = contexto_dinamico or "Base geral."
 
                     persona = dados_conta.get("prompt_persona") or "Você é um especialista comercial de alta conversão."
                     sys_prompt = f"""{persona}
-REGRAS WHATSAPP:
-- Conduza o lead até o agendamento usando SPIN Selling (1 pergunta curta por vez, 2 a 3 frases).
-- Descubra a dor antes de informar preços.
-- Contorne objeções com empatia e pergunte para avançar.
-=== DIRETRIZES DO TREINAMENTO ===
-{aprendizados_gestor}
+
 === OFERTA E REGRAS ===
 {regras_fixas}
+
 === QUEBRA DE OBJEÇÕES ===
 {matriz_objecoes}
+
 === BASE DA CLÍNICA ===
-{contexto_dinamico}"""
+{contexto_dinamico}
+
+=== ORDENS OBRIGATÓRIAS DO GESTOR (PRIORIDADE MÁXIMA — OBEDEÇA ACIMA DE TUDO) ===
+{aprendizados_gestor}
+
+REGRAS FINAIS DE RESPOSTA:
+- Siga rigorosamente TODAS as ordens obrigatórias do gestor listadas acima.
+- Conduza o lead até o agendamento usando SPIN Selling (1 pergunta curta por vez, máximo 2 a 3 frases).
+- Descubra a dor antes de informar preços."""
 
                     msgs = [{"role": "system", "content": sys_prompt}] + st.session_state.mensagens_teste[-6:]
                     resposta_final, erros_t = chamar_ia_com_rodizio_groq(
