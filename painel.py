@@ -12,9 +12,40 @@ litellm.num_retries = 0
 
 st.set_page_config(page_title="Boosterzinho", page_icon="🤖", layout="wide")
 
+
+def obter_modelos_groq_ativos(api_key: str):
+    if not api_key:
+        return []
+    try:
+        resp = requests.get(
+            "https://api.groq.com/openai/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=8
+        )
+        if resp.status_code == 200:
+            dados = resp.json().get("data", [])
+            ignorar = (
+                "whisper", "guard", "tts", "vision", "embed",
+                "orpheus", "safeguard", "gpt-oss", "qwen"
+            )
+            ativos = [
+                f"groq/{m['id']}" for m in dados
+                if m.get("active", True) and not any(x in m["id"].lower() for x in ignorar)
+            ]
+            ativos.sort(key=lambda m: (
+                0 if "llama-4" in m or "70b" in m else
+                1 if "llama" in m else 2
+            ))
+            if ativos:
+                return ativos[:3]
+    except Exception:
+        pass
+    return ["groq/meta-llama/llama-4-scout-17b-16e-instruct"]
+
+
 PROVEDORES_IA = {
-    "Groq (Grátis - Ultra Rápido)": {
-        "modelos": ["groq/llama-3.1-8b-instant", "groq/llama-3.3-70b-versatile"],
+    "Groq (Auto-Detectado - Grátis)": {
+        "modelos": ["AUTO_GROQ"],
         "env_var": "GROQ_API_KEY",
         "placeholder": "gsk_..."
     },
@@ -47,7 +78,7 @@ if "cfg_sb_key" not in st.session_state:
     st.session_state.cfg_sb_key = os.getenv("SUPABASE_KEY", "").strip()
 if "cfg_ias_selecionadas" not in st.session_state:
     st.session_state.cfg_ias_selecionadas = [
-        "Groq (Grátis - Ultra Rápido)",
+        "Groq (Auto-Detectado - Grátis)",
         "Cerebras (Grátis - Alta Escala)",
         "OpenRouter (Grátis :free)",
         "Gemini (Google)"
@@ -385,7 +416,12 @@ Valide o feedback recebido e chame `salvar_aprendizado_cerebro` para gravar a re
                         def rodar_treino(msgs_lista):
                             for ia_a in ias_prontas:
                                 cfg = PROVEDORES_IA[ia_a]
-                                for mod in cfg["modelos"]:
+                                lista_modelos = (
+                                    obter_modelos_groq_ativos(chaves_ativas[ia_a])
+                                    if cfg["modelos"] == ["AUTO_GROQ"]
+                                    else cfg["modelos"]
+                                )
+                                for mod in lista_modelos:
                                     try:
                                         return completion(
                                             model=mod,
@@ -527,7 +563,12 @@ REGRAS WHATSAPP:
 
                     for ia_atual in ias_prontas:
                         cfg = PROVEDORES_IA[ia_atual]
-                        for mod in cfg["modelos"]:
+                        lista_modelos = (
+                            obter_modelos_groq_ativos(chaves_ativas[ia_atual])
+                            if cfg["modelos"] == ["AUTO_GROQ"]
+                            else cfg["modelos"]
+                        )
+                        for mod in lista_modelos:
                             try:
                                 kwargs_c = {
                                     "model": mod,
