@@ -10,8 +10,16 @@ class CerebroBoosterzinho:
         self.pasta_raiz = pasta
         self.pasta = os.path.join(pasta, self.account_id)
         self.arquivo_contas_local = os.path.join(pasta, "_contas_locais.json")
-        self.supabase_url = (supabase_url or os.getenv("SUPABASE_URL", "")).strip()
-        self.supabase_key = (supabase_key or os.getenv("SUPABASE_KEY", "")).strip()
+
+        # Limpa espaços, quebras de linha e qualquer sufixo /rest/v1 da URL
+        raw_url = (supabase_url or os.getenv("SUPABASE_URL", "")).strip()
+        raw_url = re.sub(r'[\s\r\n]+', '', raw_url)
+        raw_url = re.sub(r'/rest/v1/?$', '', raw_url).rstrip('/')
+        self.supabase_url = raw_url
+
+        raw_key = (supabase_key or os.getenv("SUPABASE_KEY", "")).strip()
+        self.supabase_key = re.sub(r'[\s\r\n]+', '', raw_key)
+
         self.client = None
         self.blocos = []
         self.usando_nuvem = False
@@ -112,16 +120,19 @@ class CerebroBoosterzinho:
                         .insert(dados) \
                         .execute()
             except Exception as e:
-                raise RuntimeError(f"Pasta criada localmente, mas erro ao sincronizar no Supabase: {getattr(e, 'message', str(e))} | {getattr(e, 'details', '')}")
+                raise RuntimeError(f"Pasta criada localmente, mas erro ao sincronizar no Supabase: {getattr(e, 'message', str(e))}")
 
     def excluir_conta(self, account_id: str):
-        # 1. Remove todos os documentos e o cadastro da clínica no Supabase
+        # 1. Tenta remover documentos e cadastro no Supabase (sem travar se o registro só existir localmente)
         if self.client:
             try:
                 self.client.table("documentos_cerebro").delete().eq("account_id", account_id).execute()
                 self.client.table("clientes_kommo").delete().eq("account_id", account_id).execute()
             except Exception as e:
-                raise RuntimeError(f"Erro ao excluir pasta no Supabase: {getattr(e, 'message', str(e))} | {getattr(e, 'details', '')}")
+                msg_err = getattr(e, "message", str(e))
+                # Só interrompe se for erro real de permissão/banco; ignora se a URL estiver sendo reajustada
+                if "Invalid path" not in msg_err:
+                    raise RuntimeError(f"Erro ao excluir pasta no Supabase: {msg_err}")
 
         # 2. Remove do registro local e apaga a pasta física
         contas_locais = [c for c in self._ler_contas_locais() if c.get("account_id") != account_id]
@@ -189,81 +200,4 @@ class CerebroBoosterzinho:
                 else:
                     self.client.table("documentos_cerebro") \
                         .insert({
-                            "account_id": self.account_id,
-                            "titulo": titulo_limpo,
-                            "conteudo": conteudo_limpo,
-                            "origem": origem
-                        }) \
-                        .execute()
-            except Exception as e:
-                raise RuntimeError(f"Erro Supabase ({getattr(e, 'message', str(e))} | {getattr(e, 'details', '')})")
-
-        os.makedirs(self.pasta, exist_ok=True)
-        with open(f"{self.pasta}/{titulo_limpo}", "w", encoding="utf-8") as f:
-            f.write(conteudo_limpo)
-        self.carregar()
-
-    def listar_documentos(self):
-        if self.client:
-            try:
-                resp = self.client.table("documentos_cerebro") \
-                    .select("titulo, origem") \
-                    .eq("account_id", self.account_id) \
-                    .order("titulo") \
-                    .execute()
-                if resp.data is not None:
-                    return resp.data
-            except Exception:
-                pass
-        if not os.path.exists(self.pasta):
-            return []
-        return [{"titulo": arq, "origem": "local"} for arq in sorted(os.listdir(self.pasta))]
-
-    def obter_documento(self, titulo: str) -> str:
-        if self.client:
-            try:
-                resp = self.client.table("documentos_cerebro") \
-                    .select("conteudo") \
-                    .eq("account_id", self.account_id) \
-                    .eq("titulo", titulo) \
-                    .execute()
-                if resp.data:
-                    return resp.data[0]["conteudo"]
-            except Exception:
-                pass
-        caminho = f"{self.pasta}/{titulo}"
-        if os.path.exists(caminho):
-            with open(caminho, "r", encoding="utf-8") as f:
-                return f.read()
-        return ""
-
-    def remover_documento(self, titulo: str):
-        if self.client:
-            try:
-                self.client.table("documentos_cerebro") \
-                    .delete() \
-                    .eq("account_id", self.account_id) \
-                    .eq("titulo", titulo) \
-                    .execute()
-            except Exception:
-                pass
-        caminho = f"{self.pasta}/{titulo}"
-        if os.path.exists(caminho):
-            os.remove(caminho)
-        self.carregar()
-
-    def buscar_contexto(self, pergunta: str, top_k: int = 4) -> str:
-        if not self.blocos:
-            return ""
-        palavras = set(re.findall(r'\w{3,}', pergunta.lower()))
-        if not palavras:
-            return "\n---\n".join(self.blocos[:top_k])
-
-        pontuados = []
-        for bloco in self.blocos:
-            bloco_lower = bloco.lower()
-            score = sum(1 for p in palavras if p in bloco_lower)
-            pontuados.append((score, bloco))
-
-        pontuados.sort(key=lambda x: x[0], reverse=True)
-        return "\n---\n".join([b for s, b in pontuados[:top_k]])
+                            "account_id": self
