@@ -37,10 +37,44 @@ def obter_modelos_groq_ativos(api_key: str):
                 1 if "llama" in m else 2
             ))
             if ativos:
-                return ativos[:3]
+                return ativos[:5]
     except Exception:
         pass
     return ["groq/meta-llama/llama-4-scout-17b-16e-instruct"]
+
+
+def chamar_ia_com_rodizio_groq(ias_prontas, chaves_ativas, mensagens, max_tokens=400, temperature=0.35):
+    erros_detalhados = []
+    for tentativa in range(2):
+        for ia_atual in ias_prontas:
+            cfg = PROVEDORES_IA[ia_atual]
+            lista_modelos = (
+                obter_modelos_groq_ativos(chaves_ativas[ia_atual])
+                if cfg["modelos"] == ["AUTO_GROQ"]
+                else cfg["modelos"]
+            )
+            for mod in lista_modelos:
+                try:
+                    kwargs_c = {
+                        "model": mod,
+                        "messages": mensagens,
+                        "api_key": chaves_ativas[ia_atual],
+                        "max_tokens": max_tokens,
+                        "temperature": temperature,
+                        "timeout": 18,
+                        "num_retries": 0
+                    }
+                    if "gemini" in mod:
+                        kwargs_c["reasoning_effort"] = "low"
+                    resp = completion(**kwargs_c)
+                    conteudo = (resp.choices[0].message.content or "").strip()
+                    if conteudo:
+                        return conteudo, None
+                except Exception as err:
+                    erros_detalhados.append(f"[{mod}]: {err}")
+        if tentativa == 0:
+            time.sleep(2.0)
+    return None, " | ".join(erros_detalhados[-3:])
 
 
 PROVEDORES_IA = {
@@ -78,10 +112,7 @@ if "cfg_sb_key" not in st.session_state:
     st.session_state.cfg_sb_key = os.getenv("SUPABASE_KEY", "").strip()
 if "cfg_ias_selecionadas" not in st.session_state:
     st.session_state.cfg_ias_selecionadas = [
-        "Groq (Auto-Detectado - Grátis)",
-        "Cerebras (Grátis - Alta Escala)",
-        "OpenRouter (Grátis :free)",
-        "Gemini (Google)"
+        "Groq (Auto-Detectado - Grátis)"
     ]
 if "cfg_chaves_ia" not in st.session_state:
     st.session_state.cfg_chaves_ia = {
@@ -392,72 +423,45 @@ with aba_treinamento:
                 else:
                     st.session_state.mensagens_feedback.append({"role": "user", "content": feedback_input})
                     with st.spinner("Atualizando diretrizes do cérebro..."):
-                        aprendizados_atuais = cerebro.obter_documento("03_aprendizados_feedback.md")
+                        aprendizados_atuais = cerebro.obter_documento("03_aprendizados_feedback.md")[:1500]
                         sys_treinador = f"""Você é o Boosterzinho conversando com o gestor da clínica **{dados_conta['nome_empresa']}**.
-Valide o feedback recebido e chame `salvar_aprendizado_cerebro` para gravar a regra consolidada na memória permanente.
+Receba o feedback do gestor, valide como vai aplicar nos atendimentos e atualize a lista consolidada de regras.
+
+FORMATO OBRIGATÓRIO DA SUA RESPOSTA:
+Responda em duas partes separadas exatamente pela tag `===REGRAS_ATUALIZADAS===`:
+1. Antes da tag: sua resposta curta, acolhedora e objetiva confirmando ao gestor que entendeu e dando 1 exemplo prático de como vai aplicar.
+2. Depois da tag: a lista completa em Markdown (tópicos `- ...`) contendo TODAS as diretrizes antigas somadas à nova regra aprendida.
+
 === APRENDIZADOS ATUAIS ===
 {aprendizados_atuais}"""
 
-                        tools_treino = [{
-                            "type": "function",
-                            "function": {
-                                "name": "salvar_aprendizado_cerebro",
-                                "description": "Grava a lista consolidada de aprendizados da clínica.",
-                                "parameters": {
-                                    "type": "object",
-                                    "properties": {
-                                        "diretrizes_consolidadas": {"type": "string"}
-                                    },
-                                    "required": ["diretrizes_consolidadas"]
-                                }
-                            }
-                        }]
+                        msgs_t = [{"role": "system", "content": sys_treinador}] + st.session_state.mensagens_feedback[-6:]
+                        resposta_bruta, erro_tr = chamar_ia_com_rodizio_groq(
+                            ias_prontas, chaves_ativas, msgs_t, max_tokens=500, temperature=0.3
+                        )
 
-                        def rodar_treino(msgs_lista):
-                            for ia_a in ias_prontas:
-                                cfg = PROVEDORES_IA[ia_a]
-                                lista_modelos = (
-                                    obter_modelos_groq_ativos(chaves_ativas[ia_a])
-                                    if cfg["modelos"] == ["AUTO_GROQ"]
-                                    else cfg["modelos"]
+                        if resposta_bruta:
+                            if "===REGRAS_ATUALIZADAS===" in resposta_bruta:
+                                fala_chat, novas_regras = resposta_bruta.split("===REGRAS_ATUALIZADAS===", 1)
+                                if novas_regras.strip():
+                                    cerebro.salvar_documento(
+                                        "03_aprendizados_feedback.md",
+                                        novas_regras.strip(),
+                                        origem="feedback_gestor"
+                                    )
+                            else:
+                                fala_chat = resposta_bruta
+                                linha_nova = f"{aprendizados_atuais}\n- {feedback_input.strip()}".strip()
+                                cerebro.salvar_documento(
+                                    "03_aprendizados_feedback.md",
+                                    linha_nova,
+                                    origem="feedback_gestor"
                                 )
-                                for mod in lista_modelos:
-                                    try:
-                                        return completion(
-                                            model=mod,
-                                            messages=msgs_lista,
-                                            tools=tools_treino,
-                                            api_key=chaves_ativas[ia_a],
-                                            max_tokens=400,
-                                            timeout=20,
-                                            num_retries=0
-                                        )
-                                    except Exception:
-                                        continue
-                            raise RuntimeError("Todos os modelos estão ocupados no momento.")
 
-                        msgs_t = [{"role": "system", "content": sys_treinador}] + st.session_state.mensagens_feedback[-8:]
-                        try:
-                            resp_t = rodar_treino(msgs_t)
-                            msg_t = resp_t.choices[0].message
-                            while getattr(msg_t, "tool_calls", None):
-                                msgs_t.append(msg_t.model_dump(exclude_none=True))
-                                for tc in msg_t.tool_calls:
-                                    args = json.loads(tc.function.arguments)
-                                    if tc.function.name == "salvar_aprendizado_cerebro":
-                                        cerebro.salvar_documento("03_aprendizados_feedback.md", args.get("diretrizes_consolidadas", ""), origem="feedback_gestor")
-                                    msgs_t.append({
-                                        "role": "tool",
-                                        "tool_call_id": tc.id,
-                                        "name": tc.function.name,
-                                        "content": '{"status":"salvo"}'
-                                    })
-                                resp_t = rodar_treino(msgs_t)
-                                msg_t = resp_t.choices[0].message
-                            st.session_state.mensagens_feedback.append({"role": "assistant", "content": msg_t.content})
+                            st.session_state.mensagens_feedback.append({"role": "assistant", "content": fala_chat.strip()})
                             st.rerun()
-                        except Exception as e_tr:
-                            st.error(str(e_tr))
+                        else:
+                            st.error(f"Erro ao processar feedback: {erro_tr}")
 
         with col_fb_rules:
             txt_aprendizados = cerebro.obter_documento("03_aprendizados_feedback.md")
@@ -468,7 +472,7 @@ Valide o feedback recebido e chame `salvar_aprendizado_cerebro` para gravar a re
                 st.rerun()
 
     with sub_mem:
-        st.info("Estas respostas são entregues **direto do Supabase em 0,05s sem gastar tokens do Groq**. Você pode cadastrar novas respostas fixas ou editar as que o robô aprendeu sozinho.")
+        st.info("Estas respostas são entregues **direto do Supabase em 0,05s sem gastar tokens do Groq**. Você pode cadastrar novas respostas fixas ou apagar as que o robô aprendeu sozinho.")
         with st.form("form_nova_memoria_reflexa", clear_on_submit=True):
             c_m1, c_m2 = st.columns(2)
             with c_m1:
@@ -530,16 +534,16 @@ with aba_chat:
                 st.session_state.mensagens_teste.append({"role": "assistant", "content": resp_sem_ia})
                 st.rerun()
 
-            # 2. Se não encontrou na memória, aciona o rodízio de IA e grava o aprendizado
+            # 2. Se não encontrou na memória, aciona o rodízio do Groq e grava o aprendizado
             ias_prontas = [ia for ia in ias_selecionadas if ia in chaves_ativas]
             if not ias_prontas:
                 st.error("Preencha pelo menos uma API Key na aba '🔑 Chaves & Conexões'.")
             else:
                 with st.spinner("Consultando pasta e aprendendo..."):
-                    contexto_dinamico = cerebro.buscar_contexto(prompt_usuario, top_k=2)[:1000]
-                    regras_fixas = cerebro.obter_documento("01_oferta_e_regras.md")[:1000]
-                    matriz_objecoes = cerebro.obter_documento("02_quebra_objecoes.md")[:1000]
-                    aprendizados_gestor = cerebro.obter_documento("03_aprendizados_feedback.md")[:1000]
+                    contexto_dinamico = cerebro.buscar_contexto(prompt_usuario, top_k=2)[:800]
+                    regras_fixas = cerebro.obter_documento("01_oferta_e_regras.md")[:800]
+                    matriz_objecoes = cerebro.obter_documento("02_quebra_objecoes.md")[:800]
+                    aprendizados_gestor = cerebro.obter_documento("03_aprendizados_feedback.md")[:800]
                     st.session_state.ultimas_fontes = contexto_dinamico or "Aprendizado inédito salvo na Memória Reflexa."
 
                     persona = dados_conta.get("prompt_persona") or "Você é um especialista comercial de alta conversão."
@@ -557,45 +561,17 @@ REGRAS WHATSAPP:
 === BASE DA CLÍNICA ===
 {contexto_dinamico}"""
 
-                    msgs = [{"role": "system", "content": sys_prompt}] + st.session_state.mensagens_teste[-8:]
-                    resposta_final = None
-                    erros_t = []
-
-                    for ia_atual in ias_prontas:
-                        cfg = PROVEDORES_IA[ia_atual]
-                        lista_modelos = (
-                            obter_modelos_groq_ativos(chaves_ativas[ia_atual])
-                            if cfg["modelos"] == ["AUTO_GROQ"]
-                            else cfg["modelos"]
-                        )
-                        for mod in lista_modelos:
-                            try:
-                                kwargs_c = {
-                                    "model": mod,
-                                    "messages": msgs,
-                                    "api_key": chaves_ativas[ia_atual],
-                                    "max_tokens": 350,
-                                    "temperature": 0.4,
-                                    "timeout": 15,
-                                    "num_retries": 0
-                                }
-                                if "gemini" in mod:
-                                    kwargs_c["reasoning_effort"] = "low"
-                                resp = completion(**kwargs_c)
-                                resposta_final = (resp.choices[0].message.content or "").strip()
-                                if resposta_final:
-                                    break
-                            except Exception as err:
-                                erros_t.append(f"[{mod}]: {err}")
-                        if resposta_final:
-                            break
+                    msgs = [{"role": "system", "content": sys_prompt}] + st.session_state.mensagens_teste[-6:]
+                    resposta_final, erros_t = chamar_ia_com_rodizio_groq(
+                        ias_prontas, chaves_ativas, msgs, max_tokens=320, temperature=0.4
+                    )
 
                     if resposta_final:
                         cerebro.registrar_aprendizado_autonomo(prompt_usuario, resposta_final)
                         st.session_state.mensagens_teste.append({"role": "assistant", "content": resposta_final})
                         st.rerun()
                     else:
-                        st.error(" | ".join(erros_t))
+                        st.error(f"Falha nos modelos: {erros_t}")
 
     with col_crm:
         st.subheader("📊 Status do Atendimento")
@@ -644,7 +620,7 @@ with aba_chaves:
 
     with col_conn2:
         with st.container(border=True):
-            st.markdown("### ⚡ Provedores Gratuitos de IA (Rodízio)")
+            st.markdown("### ⚡ Provedores de IA (Rodízio)")
             novas_ias = st.multiselect(
                 "Ordem de Prioridade:",
                 options=list(PROVEDORES_IA.keys()),
