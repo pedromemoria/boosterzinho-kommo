@@ -129,7 +129,6 @@ REGRAS WHATSAPP:
             resp = completion(**kwargs)
             conteudo = (resp.choices[0].message.content or "").strip()
             if conteudo:
-                # Grava automaticamente o aprendizado no Supabase para não precisar chamar IA na próxima vez
                 cerebro.registrar_aprendizado_autonomo(texto_lead, conteudo)
                 return conteudo, dados_conta
         except Exception as e:
