@@ -197,4 +197,61 @@ class CerebroBoosterzinho:
                 continue
 
             ratio_seq = SequenceMatcher(None, perg_norm, gat_norm).ratio()
-            palavras_gat = set(gat_
+            palavras_gat = set(gat_norm.split())
+            intersecao = len(palavras_perg & palavras_gat) / max(len(palavras_perg | palavras_gat), 1)
+            score = (ratio_seq * 0.65) + (intersecao * 0.35)
+
+            if score > melhor_score:
+                melhor_score = score
+                melhor_item = item
+
+        if melhor_item and melhor_score >= limiar:
+            if self.client and melhor_item.get("id"):
+                try:
+                    novo_total = int(melhor_item.get("vezes_usada", 1)) + 1
+                    self.client.table("memoria_aprendizada") \
+                        .update({"vezes_usada": novo_total}) \
+                        .eq("id", melhor_item["id"]) \
+                        .execute()
+                except Exception:
+                    pass
+            return melhor_item.get("resposta_aprendida")
+        return None
+
+    def registrar_aprendizado_autonomo(self, pergunta: str, resposta: str):
+        """Guarda automaticamente novos pares pergunta -> resposta para uso futuro sem IA."""
+        perg_limpa = pergunta.strip()[:300]
+        resp_limpa = resposta.strip()[:1500]
+        if len(perg_limpa) < 2 or len(resp_limpa) < 5:
+            return
+
+        if self.buscar_memoria_reflexa(perg_limpa, limiar=0.85):
+            return
+
+        if self.client:
+            try:
+                self.client.table("memoria_aprendizada").insert({
+                    "account_id": self.account_id,
+                    "gatilho_pergunta": perg_limpa,
+                    "resposta_aprendida": resp_limpa,
+                    "vezes_usada": 1,
+                    "aprovada": True
+                }).execute()
+                return
+            except Exception:
+                pass
+
+        os.makedirs(self.pasta, exist_ok=True)
+        lista = self.listar_memorias()
+        lista.append({
+            "id": int(os.urandom(3).hex(), 16),
+            "account_id": self.account_id,
+            "gatilho_pergunta": perg_limpa,
+            "resposta_aprendida": resp_limpa,
+            "vezes_usada": 1,
+            "aprovada": True
+        })
+        with open(self.arquivo_memoria_local, "w", encoding="utf-8") as f:
+            json.dump(lista, f, ensure_ascii=False, indent=2)
+
+    def atualizar_memoria(self, mem_id: int,
