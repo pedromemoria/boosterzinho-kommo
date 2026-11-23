@@ -254,4 +254,175 @@ class CerebroBoosterzinho:
         with open(self.arquivo_memoria_local, "w", encoding="utf-8") as f:
             json.dump(lista, f, ensure_ascii=False, indent=2)
 
-    def atualizar_memoria(self, mem_id: int,
+    def atualizar_memoria(self, mem_id: int, novo_gatilho: str, nova_resposta: str):
+        if self.client:
+            try:
+                self.client.table("memoria_aprendizada") \
+                    .update({"gatilho_pergunta": novo_gatilho.strip(), "resposta_aprendida": nova_resposta.strip()}) \
+                    .eq("id", mem_id) \
+                    .execute()
+            except Exception:
+                pass
+
+    def remover_memoria(self, mem_id: int):
+        if self.client:
+            try:
+                self.client.table("memoria_aprendizada").delete().eq("id", mem_id).execute()
+            except Exception:
+                pass
+
+    def limpar_memorias_clinica(self):
+        """Remove memórias antigas ao atualizar o treinamento para o robô obedecer às novas diretrizes."""
+        if self.client:
+            try:
+                self.client.table("memoria_aprendizada").delete().eq("account_id", self.account_id).execute()
+            except Exception:
+                pass
+        if os.path.exists(self.arquivo_memoria_local):
+            try:
+                os.remove(self.arquivo_memoria_local)
+            except Exception:
+                pass
+
+    # --- GESTÃO DE CONHECIMENTO ISOLADO POR PASTA ---
+    def carregar(self):
+        self.blocos = []
+        if self.client:
+            try:
+                resp = self.client.table("documentos_cerebro") \
+                    .select("titulo, conteudo, origem") \
+                    .eq("account_id", self.account_id) \
+                    .execute()
+                for item in (resp.data or []):
+                    titulo = item["titulo"]
+                    conteudo = item["conteudo"]
+                    origem = item.get("origem", "manual")
+                    secoes = [s.strip() for s in conteudo.split("\n## ") if s.strip()]
+                    for secao in secoes:
+                        self.blocos.append({
+                            "texto": f"[{titulo}]\n{secao}",
+                            "origem": origem,
+                            "titulo": titulo
+                        })
+                if self.blocos:
+                    return
+            except Exception:
+                pass
+
+        arquivos = glob.glob(f"{self.pasta}/**/*.md", recursive=True) + \
+                   glob.glob(f"{self.pasta}/**/*.txt", recursive=True)
+        for caminho in arquivos:
+            with open(caminho, "r", encoding="utf-8") as f:
+                conteudo = f.read()
+                titulo = os.path.basename(caminho)
+                origem = "url" if "## Fonte: http" in conteudo else "arquivo"
+                secoes = [s.strip() for s in conteudo.split("\n## ") if s.strip()]
+                for secao in secoes:
+                    self.blocos.append({
+                        "texto": f"[{titulo}]\n{secao}",
+                        "origem": origem,
+                        "titulo": titulo
+                    })
+
+    def salvar_documento(self, titulo: str, conteudo: str, origem: str = "manual"):
+        conteudo_limpo = "".join(ch for ch in conteudo if ch >= " " or ch in "\n\r\t")
+        titulo_limpo = "".join(ch for ch in titulo if ch >= " ")
+
+        if self.client:
+            try:
+                existente = self.client.table("documentos_cerebro") \
+                    .select("id") \
+                    .eq("account_id", self.account_id) \
+                    .eq("titulo", titulo_limpo) \
+                    .execute()
+
+                if existente.data:
+                    self.client.table("documentos_cerebro") \
+                        .update({"conteudo": conteudo_limpo, "origem": origem}) \
+                        .eq("id", existente.data[0]["id"]) \
+                        .execute()
+                else:
+                    self.client.table("documentos_cerebro") \
+                        .insert({
+                            "account_id": self.account_id,
+                            "titulo": titulo_limpo,
+                            "conteudo": conteudo_limpo,
+                            "origem": origem
+                        }) \
+                        .execute()
+            except Exception as e:
+                raise RuntimeError(f"Erro Supabase ({getattr(e, 'message', str(e))})")
+
+        os.makedirs(self.pasta, exist_ok=True)
+        with open(f"{self.pasta}/{titulo_limpo}", "w", encoding="utf-8") as f:
+            f.write(conteudo_limpo)
+        self.carregar()
+
+    def listar_documentos(self):
+        if self.client:
+            try:
+                resp = self.client.table("documentos_cerebro") \
+                    .select("titulo, origem") \
+                    .eq("account_id", self.account_id) \
+                    .order("titulo") \
+                    .execute()
+                if resp.data is not None:
+                    return resp.data
+            except Exception:
+                pass
+        if not os.path.exists(self.pasta):
+            return []
+        return [{"titulo": arq, "origem": "local"} for arq in sorted(os.listdir(self.pasta))]
+
+    def obter_documento(self, titulo: str) -> str:
+        if self.client:
+            try:
+                resp = self.client.table("documentos_cerebro") \
+                    .select("conteudo") \
+                    .eq("account_id", self.account_id) \
+                    .eq("titulo", titulo) \
+                    .execute()
+                if resp.data:
+                    return resp.data[0]["conteudo"]
+            except Exception:
+                pass
+        caminho = f"{self.pasta}/{titulo}"
+        if os.path.exists(caminho):
+            with open(caminho, "r", encoding="utf-8") as f:
+                return f.read()
+        return ""
+
+    def remover_documento(self, titulo: str):
+        if self.client:
+            try:
+                self.client.table("documentos_cerebro") \
+                    .delete() \
+                    .eq("account_id", self.account_id) \
+                    .eq("titulo", titulo) \
+                    .execute()
+            except Exception:
+                pass
+        caminho = f"{self.pasta}/{titulo}"
+        if os.path.exists(caminho):
+            os.remove(caminho)
+        self.carregar()
+
+    def buscar_contexto(self, pergunta: str, top_k: int = 4) -> str:
+        if not self.blocos:
+            return ""
+        palavras = set(re.findall(r'\w{3,}', pergunta.lower()))
+
+        pontuados = []
+        for item in self.blocos:
+            bloco_txt = item["texto"] if isinstance(item, dict) else str(item)
+            origem = item.get("origem", "arquivo") if isinstance(item, dict) else "arquivo"
+            bloco_lower = bloco_txt.lower()
+
+            score = sum(1 for p in palavras if p in bloco_lower) if palavras else 1
+            if origem != "url" and "fonte: http" not in bloco_lower:
+                score *= 2
+
+            pontuados.append((score, bloco_txt))
+
+        pontuados.sort(key=lambda x: x[0], reverse=True)
+        return "\n---\n".join([b for s, b in pontuados[:top_k]])
